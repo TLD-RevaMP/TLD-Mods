@@ -1,0 +1,9 @@
+Bus03Full: BusFront: 3 fitting models, 18 seat spots, 17 colliders switched off
+  aisle probe (9 rays at seat height, front to back): bus parts hit before 28, after 4
+  floor and walls solid at 5 points along the bus (floor/left/right): before 5/5/5, after 5/5/5
+    colliders off under BusFront/Colliders: 17
+Bus01Full: BusFront + rear section: 9 fitting models, 26 seat spots, 29 colliders switched off
+  aisle probe (9 rays at seat height, front to back): bus parts hit before 24, after 4
+  floor and walls solid at 5 points along the bus (floor/left/right): before 3/3/3, after 3/3/3
+    colliders off under BusFront/Colliders: 17
+    colliders off under BusBack/Colliders: 12
