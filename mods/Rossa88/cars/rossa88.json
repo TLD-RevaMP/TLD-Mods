@@ -1,0 +1,599 @@
+{
+ "_": "The Rossa 88 on the game's Car07 (CarBuild.cs). Model: cars/rossa88-parts.glb, made from \"1988 Ferrari Testarossa\" by OUTPISTON (CC BY-NC-SA 4.0, see MODEL-LICENCE.txt): cut into parts, reduced, badges and brand marks removed. Positions are in that model's frame: x right (the car's left is -x), y up from the tyres' contact, z forward, axles at z = +-1.276. Car07's hood item carries the front lid (over the front trunk), its trunk item the engine lid; the engine and radiator sit in the rear bay. The model's own wheels, fuel flap, mirrors, dash, rear-view mirror and visors are used; Car07's radio, gauge pod, visors and rear-view mirror are taken out and its pedals/levers not drawn.",
+ "name": "Rossa88",
+ "model": "rossa88-parts.glb",
+ "tags": [
+  "Rossa 88",
+  "sports car",
+  "car"
+ ],
+ "donorShell": 257,
+ "donorFull": 272,
+ "ids": {
+  "shell": 108800,
+  "full": 108801
+ },
+ "idRange": [
+  108800,
+  108900
+ ],
+ "align": "wheelCentre",
+ "track": {
+  "front": 0.751,
+  "rear": 0.812,
+  "rearRaise": 0.02
+ },
+ "paintFirst": true,
+ "materials": {
+  "mm_ext": "paint",
+  "mm_windows": "glass",
+  "mm_misc": "own",
+  "mm_cab": "own",
+  "mm_lights": "own",
+  "mm_badges": "own",
+  "mm_wheel": "own",
+  "mm_tyre": "own",
+  "mm_chassis": "own",
+  "mm_rotor": "own",
+  "frunk_tub": "own",
+  "glovebox_tub": "own",
+  "filler_black": "own"
+ },
+ "seats": [
+  [
+   -0.36,
+   0.26,
+   0.05
+  ],
+  [
+   0.36,
+   0.26,
+   0.05
+  ]
+ ],
+ "shell": {
+  "body": [
+   "body",
+   "glass"
+  ],
+  "cockpit": [
+   "cockpit"
+  ],
+  "tail light": [
+   "RearLampLeft",
+   "RearLampRight"
+  ]
+ },
+ "fit": [
+  {
+   "slot": "Slots/FLDoorSlot",
+   "item": "Car07FLDoor",
+   "pivot": "DoorRot",
+   "part": "DoorLeft",
+   "id": 108811,
+   "cells": 4
+  },
+  {
+   "slot": "Slots/FRDoorSlot",
+   "item": "Car07FRDoor",
+   "pivot": "DoorRot",
+   "part": "DoorRight",
+   "id": 108812,
+   "cells": 4
+  },
+  {
+   "slot": "Slots/HoodSlot",
+   "item": "Car07Hood",
+   "pivot": "HoodRot",
+   "part": "Hood",
+   "id": 108813,
+   "cells": 4
+  },
+  {
+   "slot": "Slots/TrunkSlot",
+   "item": "Car07Trunk",
+   "pivot": "TRUNK",
+   "part": "Trunk",
+   "id": 108814,
+   "cells": 4
+  },
+  {
+   "slot": "Slots/FrontBumperSlot",
+   "item": "Car07FrontBumper",
+   "pivot": "",
+   "part": "BumperFront",
+   "id": 108815,
+   "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
+   "cells": 4
+  },
+  {
+   "slot": "Slots/RearBumperSlot",
+   "item": "Car07RearBumper",
+   "pivot": "",
+   "part": "BumperRear",
+   "id": 108816,
+   "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
+   "cells": 4
+  },
+  {
+   "slot": "Slots/RightHeadLightSlot (2)",
+   "item": "HeadLight",
+   "pivot": "",
+   "part": "HeadlightLeft",
+   "renderer": "Lamp1",
+   "lamp": "mm_lights",
+   "id": 108821
+  },
+  {
+   "slot": "Slots/RightHeadLightSlot",
+   "item": "HeadLight",
+   "pivot": "",
+   "part": "HeadlightRight",
+   "renderer": "Lamp1",
+   "lamp": "mm_lights",
+   "id": 108822
+  },
+  {
+   "slot": "Slots/LeftMirrorSlot",
+   "item": "Car07LeftMirror",
+   "pivot": "",
+   "part": "MirrorLeftBase",
+   "renderer": "left mirror talp",
+   "id": 108831,
+   "extra": [
+    {
+     "part": "MirrorLeft",
+     "renderer": "SideMirror/left mirror",
+     "node": "SideMirror"
+    },
+    {
+     "part": "MirrorLeftGlass",
+     "renderer": "SideMirror/left mirror  cam",
+     "own": true
+    }
+   ],
+   "limit": 12,
+   "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
+   "twins": {
+    "left mirror talp": "left mirror talp black",
+    "SideMirror/left mirror": "SideMirror/left mirror black"
+   }
+  },
+  {
+   "slot": "Slots/RightMirrorSlot",
+   "item": "Car07RightMirror",
+   "pivot": "",
+   "part": "MirrorRightBase",
+   "renderer": "right mirror talp",
+   "id": 108832,
+   "extra": [
+    {
+     "part": "MirrorRight",
+     "renderer": "SideMirror/right mirror",
+     "node": "SideMirror"
+    },
+    {
+     "part": "MirrorRightGlass",
+     "renderer": "SideMirror/right mirror cam",
+     "own": true
+    }
+   ],
+   "limit": 12,
+   "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
+   "twins": {
+    "right mirror talp": "right mirror talp black",
+    "SideMirror/right mirror": "SideMirror/right mirror black"
+   }
+  },
+  {
+   "slot": "Slots/FrontMirrorCraft",
+   "item": "FrontMirror",
+   "centre": [
+    0,
+    0.988,
+    0.275
+   ],
+   "ref": "FrontMirrorRot/FrontMirror/FrontMirrorScreen",
+   "_": "Car07's working rear-view mirror where the model's static one was (the game needs it: taking it out broke spawning)"
+  },
+  {
+   "slot": "Slots/EngineSlot",
+   "item": "Car07Engine 1",
+   "bottom": [
+    0,
+    0.2,
+    -1.3
+   ]
+  },
+  {
+   "slot": "Slots/CoolantSlot",
+   "item": "Car07Coolant",
+   "bottom": [
+    0,
+    0.22,
+    -1.88
+   ]
+  },
+  {
+   "slot": "Slots/FrontLicensePlate",
+   "item": "plate",
+   "pivot": "",
+   "target": [
+    0,
+    0.3,
+    2.385
+   ]
+  },
+  {
+   "slot": "Slots/RearLicensePlate",
+   "item": "plate",
+   "pivot": "",
+   "target": [
+    0,
+    0.6,
+    -2.03
+   ]
+  },
+  {
+   "slot": "Slots/RadioSlot",
+   "item": "Radio02",
+   "centre": [
+    0.01,
+    0.518,
+    0.705
+   ],
+   "ref": "radio02",
+   "turnX": 40,
+   "scale": 0.62,
+   "_": "Car07's radio, smaller and tipped back, into the model's radio opening at the top of the centre stack"
+  },
+  {
+   "slot": "Slots/KMHSlotKmh",
+   "item": "Car07Kmh",
+   "pivot": "",
+   "target": [
+    -0.34,
+    0.72,
+    0.86
+   ],
+   "_": "gauge item behind the binnacle; see gauges"
+  },
+  {
+   "slot": "Slots/KesztyutartoRot",
+   "item": "Car07Kesztyutarto",
+   "pivot": "Car06Kesztyutarto",
+   "part": "GloveboxLid",
+   "id": 108833
+  },
+  {
+   "slot": "Slots/NapellenzoLeftSlot",
+   "item": "NapellenzoLeft",
+   "pivot": "",
+   "target": [
+    -0.35,
+    1.04,
+    0.22
+   ],
+   "turnX": -10,
+   "_": "Car07's visor tipped 30 degrees to lie flat under the car's roof lining when folded up"
+  },
+  {
+   "slot": "Slots/NapellenzoRightSlot",
+   "item": "NapellenzoRight",
+   "pivot": "",
+   "target": [
+    0.35,
+    1.04,
+    0.22
+   ],
+   "turnX": -10,
+   "_": "Car07's visor tipped 30 degrees to lie flat under the car's roof lining when folded up"
+  }
+ ],
+ "hideDraw": [
+  "BrakeRot",
+  "GasRot",
+  "ClutchRot",
+  "HandBrakeRot",
+  "Slots/FrontMirrorCraft/Cube"
+ ],
+ "remove": [
+  "Slots/RightHeadLightSlot (1)",
+  "Slots/RightHeadLightSlot (3)",
+  "Slots/SimliSlotParent",
+  "Slots/SimliSlotParent (1)"
+ ],
+ "hide": [
+  "Slots/EngineSlot/Muffler"
+ ],
+ "wheels": {
+  "_": "The model's own rims and tyres on Car07's wheel and tyre items (own ids, front and rear differ); the tyre radius the game drives on is the model tyre's.",
+  "front": {
+   "rim": "RimFront",
+   "tyre": "TireFront",
+   "radius": 0.305,
+   "rimId": 108843,
+   "tyreId": 108841
+  },
+  "rear": {
+   "rim": "RimRear",
+   "tyre": "TireRear",
+   "radius": 0.325,
+   "rimId": 108844,
+   "tyreId": 108842
+  },
+  "rimRenderer": "Felni",
+  "tyreRenderer": "Gumi.001",
+  "tyreFrom": 44
+ },
+ "bothSides": [
+  "body",
+  "cockpit",
+  "Hood",
+  "Trunk",
+  "MirrorLeft",
+  "MirrorRight",
+  "GloveboxLid",
+  "PopupCoverLeft",
+  "PopupCoverRight",
+  "FuelFlap"
+ ],
+ "nodes": [
+  {
+   "node": "HandBrakeRot",
+   "target": [
+    -0.14,
+    0.3,
+    0.25
+   ],
+   "_": "between the seats"
+  },
+  {
+   "node": "VonoHorog",
+   "ref": "Cylinder/Sphere",
+   "target": [
+    0,
+    0.4,
+    -2.17
+   ],
+   "_": "tow ball behind the rear bumper, bar clear of the ground"
+  },
+  {
+   "node": "CarStuff/InteriorLight",
+   "target": [
+    -0.2,
+    1.0,
+    -0.25
+   ],
+   "_": "interior light switches on the roof lining, not Car07's roof edges"
+  },
+  {
+   "node": "CarStuff/InteriorLight/InteriorLight (1)",
+   "target": [
+    0.2,
+    1.0,
+    -0.25
+   ]
+  },
+  {
+   "node": "centerofmass",
+   "target": [
+    0,
+    0.225,
+    -0.166
+   ],
+   "_": "mid-engine balance: about 43/57 front/rear (Car07's sat ahead of the middle)"
+  }
+ ],
+ "fuelFlap": {
+  "part": "FuelFlap",
+  "door": "CarStuff/tank door",
+  "closed": "CarStuff/ClosedPos",
+  "open": "CarStuff/OpenPos",
+  "angle": 105.9
+ },
+ "follow": {
+  "CarStuff/TankCap": "CarStuff/tank door"
+ },
+ "mounts": [
+  {
+   "node": "TrunkMount",
+   "slot": "Slots/HoodSlot/HoodSlotCollider",
+   "min": [
+    -0.47,
+    0.33,
+    1.25
+   ],
+   "max": [
+    0.47,
+    0.6,
+    1.92
+   ],
+   "_": "trunk storage in the front trunk"
+  },
+  {
+   "node": "EngineMount",
+   "slot": "Slots/TrunkSlot/TrunkSlotCollider",
+   "min": [
+    -0.55,
+    0.22,
+    -1.95
+   ],
+   "max": [
+    0.55,
+    0.68,
+    -0.8
+   ],
+   "_": "engine-bay storage under the rear lid"
+  },
+  {
+   "node": "GloveStoreMount",
+   "min": [
+    0.17,
+    0.58,
+    0.75
+   ],
+   "max": [
+    0.51,
+    0.68,
+    0.94
+   ],
+   "_": "glovebox storage behind the lid"
+  }
+ ],
+ "snap": [
+  {
+   "node": "Slots/FrontLicensePlate",
+   "item": "plate",
+   "renderer": "",
+   "onto": "face"
+  },
+  {
+   "node": "Slots/RearLicensePlate",
+   "item": "plate",
+   "renderer": "",
+   "onto": "face"
+  },
+  {
+   "node": "Slots/NapellenzoLeftSlot",
+   "item": "NapellenzoLeft",
+   "renderer": "GameObject (1)/napellenzocso",
+   "onto": "frame"
+  },
+  {
+   "node": "Slots/NapellenzoRightSlot",
+   "item": "NapellenzoRight",
+   "renderer": "GameObject/napellenzocso",
+   "onto": "frame"
+  },
+  {
+   "node": "CarStuff/InteriorLight",
+   "renderer": "",
+   "onto": "roof"
+  }
+ ],
+ "collision": {
+  "_": "Cabin hole in model space (doors' inner faces to door inner faces, floor to roof lining, rear bulkhead to footwells); the other settings as tuned for this car.",
+  "cockpit_min": [
+   -0.55,
+   0.2,
+   -0.7
+  ],
+  "cockpit_max": [
+   0.55,
+   1.07,
+   1.0
+  ],
+  "wheel_clearance": [
+   0.48,
+   0.24,
+   0.16
+  ],
+  "seat_clearance": 0.04,
+  "collider_grid": [
+   4,
+   3,
+   12
+  ],
+  "collider_min": 0.012,
+  "collider_skin": 0.012
+ },
+ "gauges": {
+  "item": "Slots/KMHSlotKmh/Car07Kmh",
+  "id": 108850,
+  "normal": [
+   0,
+   0,
+   -1
+  ],
+  "width": 0.003,
+  "_": "needles on the printed dials (positions measured on the model's dash); angles: + is anticlockwise as the driver sees it",
+  "dials": [
+   {
+    "tipus": "speed",
+    "at": [
+     -0.26,
+     0.72,
+     0.822
+    ],
+    "length": 0.034,
+    "minAngle": 135,
+    "maxAngle": -135,
+    "minValue": 0,
+    "maxValue": 320
+   },
+   {
+    "tipus": "rpm",
+    "at": [
+     -0.42,
+     0.72,
+     0.822
+    ],
+    "length": 0.034,
+    "minAngle": 135,
+    "maxAngle": -135,
+    "minValue": 0,
+    "maxValue": 10000
+   },
+   {
+    "tipus": "fuel",
+    "at": [
+     -0.34,
+     0.748,
+     0.823
+    ],
+    "length": 0.014,
+    "minAngle": 45,
+    "maxAngle": -45,
+    "minValue": 0,
+    "maxValue": 76
+   },
+   {
+    "tipus": "temp",
+    "at": [
+     -0.34,
+     0.697,
+     0.822
+    ],
+    "length": 0.014,
+    "minAngle": 45,
+    "maxAngle": -45,
+    "minValue": 10,
+    "maxValue": 130
+   }
+  ]
+ },
+ "popups": {
+  "pods": [
+   {
+    "slot": "Slots/RightHeadLightSlot (2)",
+    "cover": "PopupCoverLeft"
+   },
+   {
+    "slot": "Slots/RightHeadLightSlot",
+    "cover": "PopupCoverRight"
+   }
+  ],
+  "angle": -55
+ },
+ "collisionFloor": 0.3,
+ "suspension": {
+  "distance": 0.2,
+  "spring": 62000,
+  "damper": 3700,
+  "_": "Car11's short sports travel, springs scaled for the heavier car (1644 vs 1119 kg)"
+ },
+ "_collisionFloor": "Body and part collision starts 30 cm up: the wheels carry the car; a 12 cm bump plus suspension squat reached a lower floor (the game's own low Car11 scrapes too).",
+ "inertia": {
+  "perKg": [
+   1.7776,
+   1.8697,
+   0.5007
+  ],
+  "rotation": [
+   357.37,
+   0.04,
+   359.35
+  ]
+ }
+}

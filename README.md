@@ -8,6 +8,7 @@ browser.
 | --- | --- |
 | [BusGut](mods/BusGut) | Empties the game's buses into cargo space |
 | [MountAnything](mods/MountAnything) | Mounts any held item anywhere, with a placement preview |
+| [Rossa88](mods/Rossa88) | A late-80s mid-engined sports car with pop-up lights, built on the game's Car07 |
 | [TerrainChoice](mods/TerrainChoice) | Pick crossroads, main road only or the old 2023 terrain for a new game |
 
 ## Building
@@ -21,7 +22,7 @@ Each mod is a plain .NET project. Build it against your game folder (beta branch
 ## Releases
 
 Each mod is released on its own, with a tag named after it: `busgut-v0.2.0`, `mountanything-v0.2.2`,
-`terrainchoice-v0.4.1`. A release's zip holds `BepInEx/plugins/<Mod>/<Mod>.dll`.
+`rossa88-v0.1.0`, `terrainchoice-v0.4.1`. A release's zip holds `BepInEx/plugins/<Mod>/<Mod>.dll`.
 
 RevaMP's in-game mod browser downloads these releases (its catalog is `packaging/mods.json` in TLD-RevaMP). A new
 version is a new release here plus a catalog entry and an approved-mods.txt line there.
@@ -32,4 +33,5 @@ A new mod is a new folder under `mods/`, not a new repository.
 
 ## Licence
 
-GPL-3.0 (see `LICENSE`), like each mod before.
+GPL-3.0 (see `LICENSE`), like each mod before. One exception: Rossa88's 3D model is an adaptation of a CC BY-NC-SA 4.0
+model and keeps that licence (see `mods/Rossa88/MODEL-LICENCE.txt`); its code is GPL-3.0.
