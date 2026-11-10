@@ -1,4 +1,4 @@
-MountAnything 0.2.1 - The Long Drive BETA branch (V2024.11.26b_test), works alongside TLD RevaMP (tested with 0.69.1)
+MountAnything 0.2.2 - The Long Drive BETA branch (V2024.11.26b_test), works alongside TLD RevaMP (tested with 0.69.1)
 
 Mount (glue) any item you hold onto whatever you look at: a car's body, another item, a building, the ground.
 

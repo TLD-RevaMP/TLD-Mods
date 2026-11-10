@@ -20,7 +20,7 @@ Each mod is a plain .NET project. Build it against your game folder (beta branch
 
 ## Releases
 
-Each mod is released on its own, with a tag named after it: `busgut-v0.2.0`, `mountanything-v0.2.1`,
+Each mod is released on its own, with a tag named after it: `busgut-v0.2.0`, `mountanything-v0.2.2`,
 `terrainchoice-v0.4.1`. A release's zip holds `BepInEx/plugins/<Mod>/<Mod>.dll`.
 
 RevaMP's in-game mod browser downloads these releases (its catalog is `packaging/mods.json` in TLD-RevaMP). A new

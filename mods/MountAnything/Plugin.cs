@@ -16,7 +16,7 @@ namespace MountAnything
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "anonymoustld.mountanything";
-        public const string Version = "0.2.1";
+        public const string Version = "0.2.2";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
