@@ -49,6 +49,12 @@ namespace MountAnything
         /// Called twice a second: a component this mod added to an item that is no longer mounted is removed, so the
         /// item is the game's plain item again (the game shows "toggle collision" on R for held glueable items, and R
         /// is also reload).
+        /// Its colliders are switched back on first. While a glueable item is in the player's hands the game sets its
+        /// colliders to the "toggle collision" setting every frame (fpscontroller: attachable.SetCollider(!toggle)), and
+        /// only the game's Drop turns them back on - for items that still have the component then. An item taken off
+        /// with the setting at off, in the half second before this ran, kept every collider off for good: nobody could
+        /// pick it up or touch it (play session 2026-11-10: a fridge mounted on a car, taken off, put down again, 0/12).
+        internal static long CollidersRestored;
         internal static void Cleanup()
         {
             if (Added.Count == 0) return;
@@ -59,6 +65,13 @@ namespace MountAnything
                 if (at.attached) continue;
                 (gone ??= new List<attachablescript>()).Add(at);
                 var ts = at.tosave;
+                if (ts != null && ts.P != null && ts.P.cols != null)
+                {
+                    bool anyOff = false;
+                    foreach (var c in ts.P.cols) if (c != null && c.col != null && !c.col.enabled) { anyOff = true; break; }
+                    try { at.SetCollider(_enable: true, _childrenToo: true); } catch (System.Exception e) { Plugin.Log.LogWarning("colliders back on: " + e.Message); }
+                    if (anyOff) { CollidersRestored++; Plugin.Log.LogInfo("colliders back on: " + ts.name + " (" + ts.idInSave + "), taken off with the game's collision toggle at off"); }
+                }
                 if (ts != null && ts.attachable == at) ts.attachable = null;
                 Object.Destroy(at);
                 Removed++;

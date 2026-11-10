@@ -57,7 +57,18 @@ namespace MountAnything
             Mounting.TestUnfocused = true;   // the test window has no focus: its pause menu is up
             // the game applies its saved window mode (fullscreen): a test window stays a small window
             if (Screen.fullScreenMode != FullScreenMode.Windowed || Screen.width > 1280) Screen.SetResolution(1280, 720, FullScreenMode.Windowed);
-            try { Step(); }
+            try
+            {
+                // the game's per-frame work on the held item (fpscontroller.usePickedUpStuff: "toggle collision" among it)
+                // returns at once while the cursor isn't locked, as in a test window behind its pause menu: run it here
+                if (_driveHeld && Pl != null && Pl.pickedUp != null && mainscript.s != null)
+                {
+                    mainscript.s.crsrLocked = true;
+                    Pl.usePickedUpStuff(Pl.pickedUp, hand: false);
+                    _heldFrames++;
+                }
+                Step();
+            }
             catch (Exception e) { Write("ERROR " + e); Finish(); }
         }
 
@@ -371,6 +382,8 @@ namespace MountAnything
         private static List<Pose> _expected;
         private static Vector3d _home;
         private static tosaveitemscript _taken;
+        private static bool _toggleWas, _takenWasAdded, _driveHeld;
+        private static int _heldFrames;
 
         private static float LoadStep()
         {
@@ -396,8 +409,14 @@ namespace MountAnything
                     _taken = savedatascript.s.items[e.Id];
                     if (pl.pickedUp != null) pl.Drop();
                     StandAndLook(_taken.transform.position, 1.2f);
+                    // the game's "toggle collision" (R) at off: while the mod's component is still on the held item, the
+                    // game switches its colliders off every frame; they must be back on once it is put down
+                    _toggleWas = pl.attachableColliderDisableToggle;
+                    _takenWasAdded = Mounting.Added.Contains(_taken.attachable);
+                    pl.attachableColliderDisableToggle = true;
                     pl.Pickup(_taken.P);
-                    Write("picked up " + _taken.name + " (" + _taken.idInSave + ")");
+                    _driveHeld = true; _heldFrames = 0;
+                    Write("picked up " + _taken.name + " (" + _taken.idInSave + "), collision toggle at off, the mod's component: " + _takenWasAdded);
                     _step = 2;
                     return 1.5f;
                 }
@@ -406,10 +425,23 @@ namespace MountAnything
                     Check(_taken.attachable == null || !_taken.attachable.attached, _taken.name + " came off when picked up");
                     Check(_taken.attachable == null, _taken.name + " is a plain item again (the mod's component removed)");
                     Check(_taken.GetComponent<Rigidbody>() != null && _taken.transform.parent == null || pl.pickedUp == _taken.P, _taken.name + " has its Rigidbody back");
+                    _driveHeld = false;
+                    Write("held for " + _heldFrames + " frames of the game's held-item work");
                     pl.Drop();
                     _expected.RemoveAll(x => x.Id == _taken.idInSave);
-                    _step = 3;
+                    _step = 20;
                     return 1f;
+                }
+                case 20:
+                {
+                    pl.attachableColliderDisableToggle = _toggleWas;
+                    int on = 0, all = 0;
+                    if (_taken.P != null && _taken.P.cols != null)
+                        foreach (var c in _taken.P.cols) if (c != null && c.col != null) { all++; if (c.col.enabled) on++; }
+                    Check(all > 0 && on == all, _taken.name + " put down after being taken off with the collision toggle at off: colliders " + on + "/" + all + " on" +
+                          (_takenWasAdded ? "" : " (its prefab's own component: the game's Drop does it)"));
+                    _step = 3;
+                    return 0.2f;
                 }
                 case 3:   // far away and back: unloaded and placed again
                     pl.Teleport(mainscript.UnityPosFromGlobal(_home + new Vector3d(3000, 300, 0)));
