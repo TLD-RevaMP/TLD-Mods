@@ -380,6 +380,14 @@ namespace Rossa88
                         foreach (var u in item.GetComponentsInChildren<usablescript>(true).Where(u => u.rotateAble))
                         { float l = Convert.ToSingle(fit["limit"], IC); u.minX = -l; u.maxX = l; u.minY = -l; u.maxY = l; }
                     item.GetComponent<tosaveitemscript>().id = Int(fit["id"]);
+                    // "attachReach": how far (m) from its place a held part attaches (the game's scan radius, 0.2 m). The Rossa's
+                    // panels can't get that close before they touch the body (front lid 40 cm, bumpers 20-24, doors and
+                    // engine lid 26, measured by an in-game test), so they hardly attached (asked for 2026-11-11).
+                    if (fit.ContainsKey("attachReach") && mainscript.s && mainscript.s.defScanRadius > 0f)
+                    {
+                        var att = item.GetComponent<attachablescript>();
+                        if (att) att.scanRadius = Convert.ToSingle(fit["attachReach"], IC) / mainscript.s.defScanRadius;
+                    }
                     // "cells": the part's collision as an N x N grid of boxes following its panel (one box round a curved lid
                     // reached 30 cm into the car), and the space they take kept clear of the body's boxes (a held lid, door or
                     // bumper was pushed off by them before it came near enough to attach: frunk lid 64 cm, Car07's 14).
@@ -436,8 +444,66 @@ namespace Rossa88
                     var spec = Obj(cfg, "inertia"); var pin = root.gameObject.AddComponent<InertiaPin>();
                     pin.perKg = Vec(spec["perKg"]); pin.rotationEuler = spec.ContainsKey("rotation") ? Vec(spec["rotation"]) : Vector3.zero;
                 }
+                FitSlots(root, full);
                 Collision(root);
                 ClipToFloor(root);
+            }
+
+            // "colliderFit": {"<collider in the item>": "<node in the item>"}: that collider over the node's drawn shape. The
+            // player takes a fitted part off by looking at it: the nearest collider on the use layer decides, a slot box or a
+            // part's listed collider (fpscontroller). The mirrors' colliders sat on their bases only, so a look at a mirror
+            // head went on to the door behind it and took the door off (asked for 2026-11-11).
+            // "slotFit": the slot's own box (also hit by that look) over the drawn part, or over one renderer of it given by
+            // path, 2 cm round it: the mirror base sat inside the door's top box, whose surface was 2 cm further out.
+            // Measured on the Full car; the shell's empty slots take the same boxes.
+            private readonly Dictionary<string, Bounds> slotBoxes = new Dictionary<string, Bounds>();
+            private void FitSlots(Transform root, bool full)
+            {
+                foreach (Dictionary<string, object> fit in Arr(cfg, "fit"))
+                {
+                    if (!fit.ContainsKey("slotFit") && !fit.ContainsKey("colliderFit")) continue;
+                    string path = Str(fit, "slot");
+                    var slot = root.Find(path); var box = slot ? slot.GetComponent<BoxCollider>() : null;
+                    if (!box) { Log.Info("car07: slotFit: " + path + " has no box"); continue; }
+                    var item = full ? slot.Find(Str(fit, "item")) : null;
+                    if (item)
+                    {
+                        var over = fit.ContainsKey("slotFit") && fit["slotFit"] is string sub ? item.Find(sub) : item;
+                        var b = over ? DrawnBounds(slot, over) : new Bounds();
+                        b.Expand(.04f / Mathf.Max(1e-4f, slot.lossyScale.x));   // 2 cm round it
+                        if (fit.ContainsKey("slotFit") && b.size != Vector3.zero) slotBoxes[path] = b;
+                        if (fit.ContainsKey("colliderFit"))
+                            foreach (var kv in Obj(fit, "colliderFit"))
+                            {
+                                var col = item.Find(kv.Key)?.GetComponent<BoxCollider>(); var node = item.Find((string)kv.Value);
+                                if (!col || !node) { Log.Info("car07: colliderFit: " + item.name + " has no " + kv.Key + " or " + kv.Value); continue; }
+                                var cb = DrawnBounds(col.transform, node); if (cb.size == Vector3.zero) continue;
+                                col.center = cb.center; col.size = cb.size;
+                                Log.Info("car07: " + item.name + ": " + kv.Key + " over " + kv.Value + ", size " + Vector3.Scale(cb.size, col.transform.lossyScale).ToString("F2"));
+                            }
+                    }
+                    if (!slotBoxes.TryGetValue(path, out var fitted)) continue;
+                    box.center = fitted.center; box.size = fitted.size;
+                    Log.Info("car07: " + root.name + ": " + path + " box over the drawn part, size " + Vector3.Scale(fitted.size, slot.lossyScale).ToString("F2"));
+                }
+            }
+
+            // The drawn meshes under a node, in another transform's local space.
+            private static Bounds DrawnBounds(Transform space, Transform node)
+            {
+                bool any = false; var b = new Bounds();
+                foreach (var r in node.GetComponentsInChildren<MeshRenderer>(true))
+                {
+                    if (!r.enabled) continue;
+                    var mf = r.GetComponent<MeshFilter>(); if (!mf || !mf.sharedMesh) continue;
+                    var m = space.worldToLocalMatrix * r.transform.localToWorldMatrix;
+                    foreach (var v in mf.sharedMesh.vertices)
+                    {
+                        var p = m.MultiplyPoint3x4(v);
+                        if (!any) { b = new Bounds(p, Vector3.zero); any = true; } else b.Encapsulate(p);
+                    }
+                }
+                return b;
             }
 
             // The game material for a model primitive: the config's "materials" table (source-name substring -> palette kind,
@@ -623,6 +689,19 @@ namespace Rossa88
                     made.Add(box);
                 }
                 Log.Info("car07: " + item.name + ": collision as " + made.Count + " boxes following the panel (" + cells + " x " + cells + " grid), part scale " + ls.ToString("F3"));
+                // Car07's click box for opening the panel (a solid with a usablescript, left out above) stayed Car07's shape round
+                // the new panel: the door's took in the mirror (a look at the mirror took the door off) and the lids' and doors'
+                // reached into the body (a held panel was pushed off before it could attach; asked for 2026-11-11). The grid
+                // boxes sit under it, so a click on them still finds its usablescript: it shrinks like the other old boxes.
+                int clicks = 0;
+                foreach (var u in item.GetComponentsInChildren<Collider>(true)
+                    .Where(c => !c.isTrigger && c != primary && c.GetComponent<usablescript>() && Owner(c.transform) == item && primary.transform.IsChildOf(c.transform)))
+                {
+                    var at = u.transform.InverseTransformPoint(middle);
+                    var us = u.transform.lossyScale; var tiny = new Vector3(.01f / Mathf.Abs(us.x), .01f / Mathf.Abs(us.y), .01f / Mathf.Abs(us.z));
+                    if (u is BoxCollider ub) { ub.center = at; ub.size = tiny; clicks++; }
+                }
+                if (clicks > 0) Log.Info("car07: " + item.name + ": " + clicks + " Car07 click box(es) shrunk; the grid boxes under them take the clicks");
                 return made;
             }
 

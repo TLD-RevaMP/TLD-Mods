@@ -90,6 +90,7 @@
    "pivot": "DoorRot",
    "part": "DoorLeft",
    "id": 108811,
+   "attachReach": 0.45,
    "cells": 4
   },
   {
@@ -98,6 +99,7 @@
    "pivot": "DoorRot",
    "part": "DoorRight",
    "id": 108812,
+   "attachReach": 0.45,
    "cells": 4
   },
   {
@@ -106,6 +108,7 @@
    "pivot": "HoodRot",
    "part": "Hood",
    "id": 108813,
+   "attachReach": 0.6,
    "cells": 4
   },
   {
@@ -114,6 +117,7 @@
    "pivot": "TRUNK",
    "part": "Trunk",
    "id": 108814,
+   "attachReach": 0.45,
    "cells": 4
   },
   {
@@ -122,6 +126,7 @@
    "pivot": "",
    "part": "BumperFront",
    "id": 108815,
+   "attachReach": 0.45,
    "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
    "cells": 4
   },
@@ -131,6 +136,7 @@
    "pivot": "",
    "part": "BumperRear",
    "id": 108816,
+   "attachReach": 0.45,
    "paintLike": "Slots/FLDoorSlot/Car07FLDoor",
    "cells": 4
   },
@@ -159,6 +165,8 @@
    "part": "MirrorLeftBase",
    "renderer": "left mirror talp",
    "id": 108831,
+   "slotFit": "left mirror talp",
+   "colliderFit": {"SideMirror/Collider": "SideMirror"},
    "extra": [
     {
      "part": "MirrorLeft",
@@ -185,6 +193,8 @@
    "part": "MirrorRightBase",
    "renderer": "right mirror talp",
    "id": 108832,
+   "slotFit": "right mirror talp",
+   "colliderFit": {"SideMirror/Collider": "SideMirror"},
    "extra": [
     {
      "part": "MirrorRight",
