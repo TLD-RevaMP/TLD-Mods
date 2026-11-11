@@ -1,4 +1,4 @@
-Rossa 88 0.1.0 - The Long Drive BETA branch (V2024.11.26b_test), works alongside TLD RevaMP (tested with 0.69.1 dev)
+Rossa 88 0.2.0 - The Long Drive BETA branch (V2024.11.26b_test), works alongside TLD RevaMP (tested with 0.69.1 dev)
 
 A low, wide late-80s mid-engined sports car with pop-up headlights, side strakes and a full interior.
 

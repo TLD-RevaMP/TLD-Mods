@@ -11,7 +11,7 @@ namespace Rossa88
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "anonymoustld.rossa88";
-        public const string Version = "0.1.0";
+        public const string Version = "0.2.0";
 
         // the car's files are built into the dll; a copy in a "cars" folder next to it wins (for tuning without a rebuild)
         internal static string CarsFolder => System.IO.Path.Combine(System.IO.Path.GetDirectoryName(typeof(Plugin).Assembly.Location), "cars");
