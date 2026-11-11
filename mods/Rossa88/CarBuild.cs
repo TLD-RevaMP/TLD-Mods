@@ -68,7 +68,7 @@ namespace Rossa88
                 foreach (var car in cars)
                 {
                     var made = new Dictionary<int, GameObject>();
-                    try { new Builder(db, car.Cfg).Build(made); foreach (var p in made) prefabs[p.Key] = p.Value; }
+                    try { new Builder(db, car.Cfg).Build(made); foreach (var p in made) { ListColliders(p.Value); prefabs[p.Key] = p.Value; } }
                     catch (Exception e)
                     {
                         Log.Info("car07: " + car.File + ": build failed: " + e);
@@ -80,6 +80,37 @@ namespace Rossa88
                 return prefabs.Count > 0;
             }
             finally { building = false; }
+        }
+
+        // Every solid collider of a removable part on that part's pickupable list (one layerScript per collider), as the
+        // game's own parts have them: the "toggle collision" key, ignore-collision on attach and the held layer go through
+        // that list only (asked for 2026-11-11: the Rossa's parts kept 1 to 15 boxes on with collision off). A second
+        // collider on one object moves to a child object of its own. The car's own body is left as the game has it.
+        private static void ListColliders(GameObject prefab)
+        {
+            int added = 0;
+            foreach (var p in prefab.GetComponentsInChildren<pickupable>(true))
+            {
+                if (!p.GetComponent<attachablescript>()) continue;   // parts only
+                if (p.cols == null) p.cols = new List<layerScript>();
+                foreach (var c in p.GetComponentsInChildren<Collider>(true).Where(c => !c.isTrigger && !(c is WheelCollider)).ToArray())
+                {
+                    if (c.GetComponentInParent<pickupable>(true) != p) continue;   // a nested part's: its own list
+                    var col = c;
+                    var first = c.GetComponents<Collider>().FirstOrDefault(x => !x.isTrigger && !(x is WheelCollider));
+                    if (first != c && c is BoxCollider bc)
+                    {
+                        // layerScript drives one collider per object (GetComponent): a second box gets an object of its own
+                        var go = new GameObject("Rossa collider " + c.name) { layer = c.gameObject.layer };
+                        go.transform.SetParent(c.transform, false);
+                        var nb = go.AddComponent<BoxCollider>(); nb.center = bc.center; nb.size = bc.size; nb.sharedMaterial = bc.sharedMaterial; nb.enabled = bc.enabled;
+                        Object.DestroyImmediate(bc); col = nb;
+                    }
+                    var ls = col.GetComponent<layerScript>() ?? col.gameObject.AddComponent<layerScript>();
+                    if (!p.cols.Contains(ls)) { p.cols.Add(ls); added++; }
+                }
+            }
+            if (added > 0) Log.Info("car07: " + prefab.name + ": " + added + " part colliders put on their part's collision list");
         }
 
         private static void Append(itemdatabase db)
@@ -564,11 +595,31 @@ namespace Rossa88
                 // at least 2 cm on every side in world terms, per axis (one axis's scale for all three made thin boxes on an
                 // unevenly scaled part tall: the front bumper's hung under the car and hit the ground)
                 var ls = primary.transform.lossyScale; var minSide = new Vector3(.02f / Mathf.Abs(ls.x), .02f / Mathf.Abs(ls.y), .02f / Mathf.Abs(ls.z));
+                // The game switches a part's collision through its pickupable's list of layerScripts, one collider each
+                // (the "toggle collision" key, ignore-collision on attach): every extra cell is a child object of its own,
+                // with a layerScript, on that list. Extra boxes on the primary's object were missed by the toggle (asked for
+                // 2026-11-11: "the collision doesn't turn off when collision is off").
+                var owner = primary.GetComponentInParent<pickupable>(true);   // the part is built inactive (in the library)
+                if (owner && owner.cols == null) owner.cols = new List<layerScript>();
+                void Listed(Collider c)
+                {
+                    if (!owner) return;
+                    var ls0 = c.GetComponent<layerScript>() ?? c.gameObject.AddComponent<layerScript>();
+                    if (!owner.cols.Contains(ls0)) owner.cols.Add(ls0);
+                }
+                int cellNo = 0;
                 foreach (var cb in boxes.Values)
                 {
-                    var box = firstCell ? primary : primary.gameObject.AddComponent<BoxCollider>();
-                    if (!firstCell) box.sharedMaterial = primary.sharedMaterial;
+                    BoxCollider box;
+                    if (firstCell) box = primary;
+                    else
+                    {
+                        var go = new GameObject("Rossa collision cell " + ++cellNo) { layer = primary.gameObject.layer };
+                        go.transform.SetParent(primary.transform, false);   // the primary's frame: centre and size stay in its space
+                        box = go.AddComponent<BoxCollider>(); box.sharedMaterial = primary.sharedMaterial;
+                    }
                     box.center = cb.center; box.size = Vector3.Max(cb.size, minSide); firstCell = false;
+                    Listed(box);
                     made.Add(box);
                 }
                 Log.Info("car07: " + item.name + ": collision as " + made.Count + " boxes following the panel (" + cells + " x " + cells + " grid), part scale " + ls.ToString("F3"));
