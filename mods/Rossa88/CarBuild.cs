@@ -40,6 +40,7 @@ namespace Rossa88
                 catch (Exception e) { Log.Info("car07: " + file + " not loaded: " + e.Message); }
             }
             h.Patch(AccessTools.Method(typeof(itemdatabase), "ItemInit"), postfix: new HarmonyMethod(typeof(CarBuild), nameof(AfterDatabase)));
+            WearLayer.Install(h);
             h.Patch(AccessTools.Method(typeof(mainscript), "Awake"), postfix: new HarmonyMethod(typeof(CarBuild), nameof(AfterDatabase)));
             h.Patch(AccessTools.Method(typeof(itemdatabase), "Item", new[] { typeof(int) }), prefix: new HarmonyMethod(typeof(CarBuild), nameof(Resolve)));
             h.Patch(AccessTools.Method(typeof(itemdatabase), "Item", new[] { typeof(int), typeof(GameObject).MakeByRefType() }),
@@ -416,8 +417,61 @@ namespace Rossa88
                 if (cfg.ContainsKey("materials"))
                     foreach (var kv in Obj(cfg, "materials"))
                         if (n.Contains(kv.Key))
-                            return (string)kv.Value == "own" && source ? source : palette.TryGetValue((string)kv.Value, out var m) && m ? m : palette["paint"];
+                            return (string)kv.Value == "own" && source ? Shine(source) : palette.TryGetValue((string)kv.Value, out var m) && m ? m : palette["paint"];
                 return CarBuild.Pick(palette, n);
+            }
+
+            // "shineLike": {"<source-name substring>": <catalogue id>}: the model's own textured material, as shiny as that
+            // game item's (metallic and smoothness copied). The model's rims came out matte (metallic 0, smoothness 0.5)
+            // next to the game's rims (Metal0New: 0.95 / 0.8); the texture and its baked shading stay.
+            private readonly Dictionary<Material, Material> shined = new Dictionary<Material, Material>();
+            private Material Shine(Material source)
+            {
+                if (!cfg.ContainsKey("shineLike")) return source;
+                if (shined.TryGetValue(source, out var done)) return done;
+                Material result = source;
+                foreach (var kv in Obj(cfg, "shineLike"))
+                {
+                    if (kv.Key.StartsWith("_") || !source.name.Contains(kv.Key)) continue;   // "_" is the note
+                    // the item's new-condition material, looked up by its condition type as the game does when the part starts
+                    // (partconditionscript.FStart: mainscript.conditionmaterials; a new rim is Metal0New). The prefab's own
+                    // stored material is not the one drawn (the rim item's was "fem3", 0.85 / 0.2).
+                    var pcs = db.items[Int(kv.Value)].GetComponentsInChildren<partconditionscript>(true);
+                    var like = pcs.Select(pc => NewMaterial(pc)).Concat(pcs.Select(pc => pc.defNew))
+                        .FirstOrDefault(m => m && m.HasProperty("_Metallic") && m.HasProperty("_Glossiness"));
+                    result = new Material(source) { name = source.name + " (shine)" };
+                    result.SetFloat("_Metallic", like ? like.GetFloat("_Metallic") : .95f);
+                    result.SetFloat("_Glossiness", like ? like.GetFloat("_Glossiness") : .8f);
+                    Log.Info("car07: " + source.name + " as shiny as " + (like ? like.name : "the game's rims") + " (metallic " +
+                             result.GetFloat("_Metallic").ToString("0.##", IC) + ", smoothness " + result.GetFloat("_Glossiness").ToString("0.##", IC) + ")");
+                    break;
+                }
+                shined[source] = result;
+                return result;
+            }
+
+            private static Material NewMaterial(partconditionscript pc)
+            {
+                if (!mainscript.s || mainscript.s.conditionmaterials == null) return null;
+                string t = pc.useOnlyMaterialTipusForMaterial ? pc.materialTipus : pc.tipus;
+                foreach (var cm in mainscript.s.conditionmaterials) if (cm.tipus == t) return cm.New;
+                return null;
+            }
+
+            // "wearLike": {"<material-name substring>": "<game condition type>"}: which of the game's worn looks a part takes
+            // (the dash and trim wear like the game's dark metal, seats like its leather, rims like its metal).
+            private string WearLike(string material)
+            {
+                if (!cfg.ContainsKey("wearLike")) return null;
+                foreach (var kv in Obj(cfg, "wearLike")) if (!kv.Key.StartsWith("_") && material.Contains(kv.Key)) return (string)kv.Value;
+                return null;
+            }
+
+            // Materials that stay clear at any condition: glass, lenses and lamps.
+            private static bool Clear(string material)
+            {
+                string n = material.ToLowerInvariant();
+                return n.Contains("glass") || n.Contains("window") || n.Contains("light") || n.Contains("lens") || n.Contains("lamp");
             }
 
             private static bool Glassy(Renderer r)
@@ -1395,6 +1449,8 @@ namespace Rossa88
                     child.AddComponent<MeshFilter>().sharedMesh = Build(g.Select(i => subs[i]).ToList());
                     var r = child.AddComponent<MeshRenderer>();
                     r.sharedMaterials = new[] { g.Key }; r.shadowCastingMode = renderer.shadowCastingMode;
+                    // it wears with the part it sits on (glass and lamps stay clear, as the game's do)
+                    if (g.Key && g.Key != palette["glass"] && !Clear(g.Key.name)) { var w = child.AddComponent<WearLayer>(); w.own = g.Key; w.tipus = WearLike(g.Key.name); }
                 }
             }
         }

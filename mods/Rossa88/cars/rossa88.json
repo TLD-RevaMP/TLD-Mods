@@ -39,6 +39,25 @@
   "glovebox_tub": "own",
   "filler_black": "own"
  },
+ "wearLike": {
+  "_": "Which of the game's worn looks (condition types) the model's own parts take over their texture when the car is worn (WearLayer).",
+  "mm_cab": "darkmetal",
+  "mm_misc": "darkmetal",
+  "mm_chassis": "darkmetal",
+  "filler_black": "darkmetal",
+  "mm_badges": "metals",
+  "mm_wheel": "metals",
+  "mm_rotor": "metals",
+  "frunk_tub": "karpit",
+  "glovebox_tub": "karpit",
+  "chrome front": "metals",
+  "Cube.020": "darkmetal",
+  "seats": "coloredleather"
+ },
+ "shineLike": {
+  "_": "The rims keep the model's texture but shine like the game's rims (catalogue 43, the medium wheel's rim: Metal0New).",
+  "mm_wheel": 43
+ },
  "seats": [
   [
    -0.36,
