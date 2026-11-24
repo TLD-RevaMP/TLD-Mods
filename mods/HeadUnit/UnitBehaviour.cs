@@ -9,11 +9,13 @@ namespace HeadUnit
     /// On every head unit item (added to the model prefabs, so every spawned unit has it). Finds the car it sits in and
     /// that car's shared state (UnitState: the YouTube queue, what plays and where, its volume), and shows it.
     ///
-    /// The tab (RADIO, MEDIA, NAV) is the car's, in its shared state: one player switching it switches it for everyone
-    /// in the car, as on one real screen (a playtest: the host went to NAV and the passenger's screen stayed on MEDIA).
-    /// What is inside a tab stays each player's own: the queue list, FULL, BIG, a dialog being typed in, the map's zoom
-    /// and hints. The video plays on whatever tab is open, alongside the game's radio (both have their own volume and
-    /// switch). Work is done only near the local player: a unit 2 km away plays nothing here.
+    /// The screen is the car's, in its shared state: the tab (RADIO, MEDIA, NAV), the map's zoom and the bend hints.
+    /// One player changing them changes them for everyone in the car, as on one real screen (a playtest: the host went
+    /// to NAV and the passenger's screen stayed on MEDIA). What a player is in the middle of stays their own: the queue
+    /// list, FULL, BIG, a link being typed, a search's results (one player browsing the queue doesn't move the others').
+    /// The radio's own state (on, station, volume, AM/FM) is the game's, which TLD Revamp shares. The video plays on
+    /// whatever tab is open, alongside the game's radio (both have their own volume and switch). Work is done only near
+    /// the local player: a unit 2 km away plays nothing here.
     public sealed partial class UnitBehaviour : MonoBehaviour
     {
         public static readonly List<UnitBehaviour> All = new List<UnitBehaviour>();
@@ -34,14 +36,15 @@ namespace HeadUnit
         private Video _video;
         private MapView _map;
 
-        /// The tab shown: the car's (UnitState.Tab) once there is a state, set here at once when this player switches it
-        /// (the edit goes to the state's owner and comes back).
+        /// What the screen shows: the car's (UnitState's tab, zoom and hints) once there is a state, set here at once when
+        /// this player changes it (the edit goes to the state's owner and comes back).
         public Mode Tab = Mode.Radio;
-        /// The shared tab last seen: only a change of it moves this screen (an edit of this player's still on its way
-        /// doesn't bounce the screen back meanwhile).
-        private Mode _seenTab; private bool _tabSeen;
-        /// This player's view of the unit (not shared): the queue list, FULL, the next-bend hint.
-        private bool _listOpen, _full, _hints = true;
+        private int _zoom = 2; private bool _hints = true;
+        /// The car's screen as last seen in its state: only a change there moves this screen (an edit of this player's
+        /// still on its way doesn't bounce it back meanwhile).
+        private Mode _seenTab; private int _seenZoom; private bool _seenHints, _screenSeen;
+        /// This player's own view of the unit (not shared): the queue list, FULL.
+        private bool _listOpen, _full;
         /// The tools dialog opened from the MEDIA tab's GET TOOLS (a video that can't play here): NOT NOW closes it
         /// rather than going on to a link.
         private bool _toolsOnly;
@@ -89,13 +92,7 @@ namespace HeadUnit
 
             if (Time.realtimeSinceStartup >= _findAt) { _findAt = Time.realtimeSinceStartup + 1f; Bind(); }
             var s = State;
-            // another player switched the car's tab (or this car's state was just found): this screen follows
-            if (s != null && (!_tabSeen || s.Tab != _seenTab))
-            {
-                _tabSeen = true; _seenTab = s.Tab;
-                if (Tab != s.Tab) { Tab = s.Tab; _listOpen = false; _full = false; _listTop = -1; }
-            }
-            else if (s == null) _tabSeen = false;   // out of the car: the next car's state is followed from its first sight
+            FollowScreen(s);
             bool radioOn = Radio == null || Radio.ON;
             bool powered = Powered;
 
@@ -137,7 +134,7 @@ namespace HeadUnit
                     overlay = f >= 0f ? $"downloading the video {Mathf.RoundToInt(f * 100f)}%" : c >= 0f ? $"converting the video for this machine {Mathf.RoundToInt(c * 100f)}%" : "loading...";
                     Touch.Progress(f >= 0f ? f : c);
                 }
-                else if (NeedsTools) overlay = "this machine can't play YouTube yet: each player needs their own yt-dlp and Deno"
+                else if (NeedsTools(s)) overlay = "this machine can't play YouTube yet: each player needs their own yt-dlp and Deno"
                     + (Plugin.Convert.Value && Ytdlp.Present ? " and ffmpeg" : "") + ". Press GET TOOLS";
                 else if (YtdlpFailed) overlay = _video.Problem + "\nstill failing? an old yt-dlp is the usual cause: press UPDATE";
                 else overlay = _video.Problem ?? (s.Playing ? "" : "paused");
@@ -151,6 +148,7 @@ namespace HeadUnit
             {
                 // the map: roads around the car, the road ahead in the unit's colour, heading up (redrawn every frame)
                 if (_map == null) _map = new MapView(Model != null ? Model.Screen : new Color(0.3f, 0.7f, 1f));
+                _map.SetZoom(_zoom);
                 if (Car != null) _map.Draw(Car.transform, IsMyCar() ? Nav.Path : null);
                 string t = (IsMyCar() ? Nav.NextText() : "") + "   " + MapView.ZoomText(_map.Zoom);
                 Show(Color.black, _map.Texture, flash ?? t, top: true, aspect: MapView.Wpx / (float)MapView.Hpx);
@@ -192,13 +190,17 @@ namespace HeadUnit
             }
             if (_dialog == Dialog.Link)
             {
-                key = "dialog-link";
+                bool update = LookupFailed;
+                key = "dialog-link" + (update ? "-update" : "");
                 bool typing = TypingInto == this;
                 bottom.Add(("paste", "PASTE", () => { _link = (GUIUtility.systemCopyBuffer ?? "").Trim(); }, false));
                 bottom.Add(("type", typing ? "TYPING" : "TYPE", () => TypingInto = typing ? null : this, typing));
                 bottom.Add(("del", "DEL", () => { if (_link.Length > 0) _link = _link.Substring(0, _link.Length - 1); }, false));
                 bottom.Add(("add", IsLink(_link) || _link.Trim().Length == 0 ? "ADD" : "SEARCH", AddLink, false));
                 bottom.Add(("cancel", "CANCEL", CloseDialog, false));
+                // a link or search here failed in yt-dlp (an old one, mostly): updating it is offered here too (with
+                // nothing in the queue, MEDIA has no failing video to offer it)
+                if (update) bottom.Add(("update", "UPDATE", Ytdlp.Update, true));
             }
             else if (_dialog == Dialog.Results)
             {
@@ -287,7 +289,7 @@ namespace HeadUnit
                     bottom.Add(("vol-", "VOL -", () => VideoVolume(-0.1f), false));
                     bottom.Add(("vol+", "VOL +", () => VideoVolume(0.1f), false));
                     // without the programs, + ADD is where they are offered: named for it while the queue can't play here
-                    bool tools = NeedsTools;
+                    bool tools = NeedsTools(s);
                     bottom.Add(("link", tools ? "GET TOOLS" : "+ ADD", () =>
                     {
                         _toolsOnly = tools;
@@ -301,11 +303,11 @@ namespace HeadUnit
             }
             else
             {
-                bottom.Add(("zoom-", "ZOOM -", () => { if (_map != null) _map.ZoomBy(1); }, false));
-                bottom.Add(("zoom+", "ZOOM +", () => { if (_map != null) _map.ZoomBy(-1); }, false));
-                bottom.Add(("hints", _hints ? "HINTS: ON" : "HINTS: OFF", () => _hints = !_hints, _hints));
+                bottom.Add(("zoom-", "ZOOM -", () => SetZoom(_zoom + 1), false));
+                bottom.Add(("zoom+", "ZOOM +", () => SetZoom(_zoom - 1), false));
+                bottom.Add(("hints", _hints ? "HINTS: ON" : "HINTS: OFF", () => SetHints(!_hints), _hints));
             }
-            if (Tab == Mode.Video && _dialog == Dialog.None && !_listOpen) key += (NeedsTools ? "t" : "") + (YtdlpFailed ? "u" : "");
+            if (Tab == Mode.Video && _dialog == Dialog.None && !_listOpen) key += (NeedsTools(s) ? "t" : "") + (YtdlpFailed ? "u" : "");
             Touch.Layout(key, top, bottom, list, cols: cols, listTop: _dialog == Dialog.Results ? 0.2f : Tab == Mode.Radio ? 0.3f : 0f);
         }
 
@@ -322,26 +324,53 @@ namespace HeadUnit
             _listTop = Mathf.Clamp(now + rows, 0, maxTop);
         }
 
-        /// This player switches the tab: here at once, and for everyone in the car through the shared state.
+        /// Another player changed the car's screen, or this car's state was just found: this screen follows. Each part
+        /// only when it changed there, so a press of this player's that is still on its way isn't undone meanwhile.
+        private void FollowScreen(UnitState s)
+        {
+            if (s == null) { _screenSeen = false; return; }   // out of the car: the next car's screen is taken as it is
+            if ((!_screenSeen || s.Tab != _seenTab) && Tab != s.Tab) { Tab = s.Tab; _listOpen = false; _full = false; _listTop = -1; }
+            if (!_screenSeen || s.Zoom != _seenZoom) _zoom = s.Zoom;
+            if (!_screenSeen || s.Hints != _seenHints) _hints = s.Hints;
+            _screenSeen = true; _seenTab = s.Tab; _seenZoom = s.Zoom; _seenHints = s.Hints;
+        }
+
+        /// This player switches the tab: here at once, and for everyone in the car through the shared state. Sent unless
+        /// the car's screen is already there (not this one's: a press always brings the car's screen to it).
         private void SetTab(Mode m)
         {
             _listOpen = false; _full = false; CloseDialog();
-            if (Tab == m) return;
             Tab = m;
-            Edit(w => { w.Byte((byte)Op.Tab); w.Byte((byte)m); });
+            var s = State;
+            if (s == null || s.Tab != m) Edit(w => { w.Byte((byte)Op.Tab); w.Byte((byte)m); });
+        }
+
+        /// The map's zoom (0 nearest), for everyone in the car.
+        private void SetZoom(int z)
+        {
+            _zoom = Mathf.Clamp(z, 0, UnitState.MaxZoom);
+            var s = State;
+            if (s == null || s.Zoom != _zoom) { byte b = (byte)_zoom; Edit(w => { w.Byte((byte)Op.Zoom); w.Byte(b); }); }
+        }
+
+        /// The bend hints on or off, for everyone in the car.
+        private void SetHints(bool on)
+        {
+            _hints = on;
+            var s = State;
+            if (s == null || s.Hints != on) Edit(w => { w.Byte((byte)Op.Hints); w.Bool(on); });
         }
 
         /// The car's queue has a video and this machine lacks what plays it (each player downloads their own: one who
         /// never pressed + ADD, a passenger, had none and saw only "yt-dlp is not installed").
-        private bool NeedsTools
+        private static bool NeedsTools(UnitState s)
         {
-            get
-            {
-                var s = State;
-                if (s == null || s.Current == null || Ytdlp.Downloading) return false;
-                return !Ytdlp.Present || (Plugin.Convert.Value && !Ytdlp.HasFfmpeg);
-            }
+            if (s == null || s.Current == null || Ytdlp.Downloading) return false;
+            return !Ytdlp.Present || (Plugin.Convert.Value && !Ytdlp.HasFfmpeg);
         }
+
+        /// The last link or search looked up failed in yt-dlp (Ytdlp.ListFailed).
+        private static bool LookupFailed => Ytdlp.ListFailed && Ytdlp.Present && !Ytdlp.Downloading;
 
         /// yt-dlp is there but couldn't fetch the video playing (an old yt-dlp, mostly: YouTube changes often).
         private bool YtdlpFailed => !Ytdlp.Downloading && Ytdlp.Present && _video != null && _video.Problem != null && _video.Problem.StartsWith("yt-dlp:");
@@ -368,6 +397,7 @@ namespace HeadUnit
             string shown = _link.Length > 48 ? "..." + _link.Substring(_link.Length - 45) : _link;
             string how = TypingInto == this ? "typing: Enter adds or searches, Esc stops typing" : "PASTE a copied link, or TYPE a link or words to search";
             if (_searching) how = "searching YouTube...";
+            else if (LookupFailed) how += "\nstill failing? an old yt-dlp is the usual cause: press UPDATE";
             return "A YouTube or Spotify link (video, playlist, album, song), or words to search YouTube\n" + (shown.Length > 0 ? shown : "-") + (TypingInto == this ? "_" : "") + "\n" + how
                 + (Panel.Flashing != null ? "\n" + Panel.Flashing : "");
         }
@@ -551,13 +581,17 @@ namespace HeadUnit
         /// Send an edit to the car's state, making the state first if nobody has yet.
         public bool Edit(Action<RecordWriter> write)
         {
+            // the car's state looked for first: Bind runs once a second, and a press in between (a player just got in,
+            // the car's state not found yet) made a second state, which lost to the first and took the press with it
+            if (StateObj == null || StateObj.Removed) Bind();
             if (Car == null) return false;
             if (StateObj == null || StateObj.Removed)
             {
                 var go = new GameObject("HeadUnitState");
                 DontDestroyOnLoad(go);
                 var h = go.AddComponent<StateHolder>();
-                h.State.Tab = Tab;   // the tab this player is on (a first video added from MEDIA kept the screen on RADIO)
+                // the screen as this player has it (a first video added from MEDIA put everyone's screen on RADIO)
+                h.State.Tab = Tab; h.State.Zoom = (byte)Mathf.Clamp(_zoom, 0, UnitState.MaxZoom); h.State.Hints = _hints;
                 // the car shared first, so the state carries its session id where it has one at once (with the local
                 // key read before, a state made in a session started out under a number only this machine knows)
                 if (MpApi.InSession && MpApi.WorldObjectId(Car.gameObject) == 0) MpApi.ShareWorldObject(Car.gameObject);

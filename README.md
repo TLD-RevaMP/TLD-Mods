@@ -34,10 +34,11 @@ RevaMP as well (single player only). TrailerHitches and RoadEnd reach the API by
 
 ## Tests
 
-`tests/` holds the unit tests that need no game; CI runs every project there. The TV Browser tests compile RevaMP's
-record format from a TLD-RevaMP checkout (`TLD_REVAMP_DIR`, by default `TLD-RevaMP` next to this repository):
+`tests/` holds the unit tests that need no game; CI runs every project there. The TV Browser and Head Unit tests compile
+RevaMP's record format from a TLD-RevaMP checkout (`TLD_REVAMP_DIR`, by default `TLD-RevaMP` next to this repository):
 
     dotnet run --project tests/TvBrowserCoreTest.csproj
+    dotnet run --project tests/HeadUnitStateTest.csproj
     TVB_CHROME=/path/to/chrome-headless-shell dotnet run --project tests/TvBrowserPageTest.csproj   # skipped without it
 
 The in-game tests for the mods stay in TLD-RevaMP's `tools/` (`headunit.py`, `tvbrowser.py`, `cartrailer.py`,

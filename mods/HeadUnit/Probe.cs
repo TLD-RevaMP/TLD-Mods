@@ -280,7 +280,9 @@ namespace HeadUnit
             var u = Nearest(true);
             if (u == null) return "no mounted unit";
             var s = u.State;
-            return $"tab {u.Tab}; index {(s != null ? s.Index : -1)} of {(s != null ? s.Queue.Count : 0)}, {(s != null && s.Playing ? "playing" : "paused")} at {(s != null ? s.Position(TLDRevamp.Multiplayer.MpApi.SessionTime) : 0f):F1}; "
+            // the car's shared screen (UnitState) beside this screen's tab: both machines report the same once in step
+            string screen = s != null ? $", shared tab {s.Tab}, zoom {s.Zoom}, hints {(s.Hints ? "on" : "off")}" : "";
+            return $"tab {u.Tab}{screen}; index {(s != null ? s.Index : -1)} of {(s != null ? s.Queue.Count : 0)}, {(s != null && s.Playing ? "playing" : "paused")} at {(s != null ? s.Position(TLDRevamp.Multiplayer.MpApi.SessionTime) : 0f):F1}; "
                 + $"video {(u.VideoReady ? "ready" : "not ready")} {(u.VideoPlaying ? "PLAYING" : "")} problem {u.VideoProblem ?? "none"}";
         }
 

@@ -62,7 +62,9 @@ namespace HeadUnit
         /// videos has no yt-dlp yet: what the host queued failed three times while they downloaded it, and never
         /// played for them.
         public static int ToolsVersion;
-        private static void ToolsChanged() { ToolsVersion++; PrefetchFailed.Clear(); }
+        private static void ToolsChanged() { ToolsVersion++; PrefetchFailed.Clear(); ListFailed = false; }
+        /// The last link or search looked up (List) failed in yt-dlp: the + ADD dialog offers UPDATE.
+        public static bool ListFailed;
 
         private static readonly ConcurrentQueue<Action> MainThread = new ConcurrentQueue<Action>();
         /// The videos being fetched, and who waits for each (a prefetch, then the player when it comes up).
@@ -136,9 +138,10 @@ namespace HeadUnit
         public static void List(string link, Action<List<Entry>> done)
         {
             if (!Present) { Status = "yt-dlp is not installed"; done(null); return; }
-            var args = "--flat-playlist --playlist-end 100 --no-warnings --encoding utf-8 --print \"%(id)s\t%(title)s\t%(duration)s\" \"" + link + "\"";
+            var args = "--flat-playlist --playlist-end 100 --no-warnings --print \"%(id)s\t%(title)s\t%(duration)s\" \"" + link + "\"";
             Run(args, 60000, (code, outp, err) =>
             {
+                ListFailed = code != 0;
                 if (code != 0) { Status = "yt-dlp: " + FirstLine(err); done(null); return; }
                 var list = new List<Entry>();
                 foreach (var line in outp.Split('\n'))
@@ -334,13 +337,14 @@ namespace HeadUnit
             catch (Exception e) { Plugin.Log.LogWarning("video cache: " + e.Message); }
         }
 
-        /// yt-dlp writes its output in the console's code page unless told otherwise (Windows: cp1252), which turned
-        /// every title in another script into question marks: read as UTF-8 here, so it writes UTF-8 (--encoding where
-        /// titles are read; the environment too, for what it prints elsewhere).
+        /// yt-dlp writes in the console's code page unless told otherwise (Windows: cp1252), which turned every title in
+        /// another script into question marks, and its errors with them: it is read as UTF-8 here, so it writes UTF-8
+        /// (--encoding for what yt-dlp prints; the environment for Python's own messages, should the frozen yt-dlp.exe
+        /// honour it).
         private static readonly Dictionary<string, string> Utf8 = new Dictionary<string, string> { ["PYTHONIOENCODING"] = "utf-8", ["PYTHONUTF8"] = "1" };
 
         private static void Run(string args, int timeoutMs, Action<int, string, string> done, Action<string> line = null) =>
-            Run(Exe, args, timeoutMs, done, line, Utf8);
+            Run(Exe, "--encoding utf-8 " + args, timeoutMs, done, line, Utf8);
 
         /// The programs running now (yt-dlp, ffmpeg): ended with the game (KillAll), not left converting after it.
         private static readonly ConcurrentDictionary<int, Process> Running = new ConcurrentDictionary<int, Process>();
@@ -359,7 +363,7 @@ namespace HeadUnit
                     var psi = new ProcessStartInfo(exe, args)
                     {
                         UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                        StandardOutputEncoding = Encoding.UTF8, WorkingDirectory = Dir,
+                        StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = Dir,
                     };
                     if (env != null) foreach (var kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value;
                     var outSb = new StringBuilder(); var errSb = new StringBuilder();

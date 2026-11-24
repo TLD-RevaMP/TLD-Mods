@@ -6,14 +6,15 @@ In the game: rare loot in a few models, each fitting only some cars. The game's 
 touch screen (look at a button and click, as with the game's knobs) has three tabs: the radio, YouTube with a queue,
 and navigation (a map of the roads around the car and the bends and descents ahead). A unit can also be glued
 anywhere in the car, like any item. In a session, everyone in or near the car sees the same video at the same moment,
-and the same tab: whoever switches to RADIO, MEDIA or NAV switches it for everyone (what is inside a tab, such as the
-queue list, FULL or the map's zoom, stays each player's own).
+and the same screen: whoever switches to RADIO, MEDIA or NAV, zooms the map or turns the hints off does it for
+everyone (the radio itself is shared by the game). What a player is in the middle of stays their own: the queue list,
+FULL, BIG, a link being typed, a search's results.
 
 ## What it shows
 
 - **Registering a mod and a shared type.** `Plugin.Awake` calls `MpApi.RegisterMod` and `MpApi.RegisterType`; the
   join then checks every player has the same mod.
-- **State as a record.** `State.cs`: what a car's unit shares (the queue, what plays and from when, the tab) is
+- **State as a record.** `State.cs`: what a car's unit shares (the queue, what plays and from when, the screen) is
   one record, written and read by `UnitStateType`, with a size cap (`MaxRecordBytes`). Edits from players go
   through `OnEdit`, which checks them before applying.
 - **Sharing an object tied to a game object.** `UnitBehaviour.cs` makes sure the car is shared
@@ -35,7 +36,7 @@ queue list, FULL or the map's zoom, stays each player's own).
 | `Plugin.cs` | Settings, API registration, Harmony patches, the per-frame runner |
 | `Units.cs` | The head unit models as game items, and which cars each fits |
 | `UnitBehaviour.cs` | On every unit: finds its car and that car's shared state, and shows it |
-| `State.cs` | The shared state record and its type (queue, playback position, tab) |
+| `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom, hints) |
 | `Touch.cs`, `Controls.cs`, `Panel.cs` | The touch screen, crosshair clicks, typing a link, the passengers' big picture |
 | `Look.cs` | The unit's body colour, screen and text |
 | `Video.cs` | Plays the video on this machine and keeps it at the shared position |
@@ -62,5 +63,6 @@ is downloaded until the player accepts on the screen.
 
 Every player needs these programs on their own machine: nothing passes between players but video ids. A player who
 joins a car where videos already play sees GET TOOLS in place of + ADD until they have them, and the video starts as
-soon as they arrive. When yt-dlp fails to fetch a video (usually because it is old and YouTube has changed), the MEDIA
-tab offers UPDATE, which fetches the newest yt-dlp and checks it the same way.
+soon as they arrive. When yt-dlp fails (usually because it is old and YouTube has changed), UPDATE fetches the newest
+yt-dlp and checks it the same way: on the MEDIA tab in place of FULL while the video playing fails, and in the + ADD
+dialog after a link or search fails.

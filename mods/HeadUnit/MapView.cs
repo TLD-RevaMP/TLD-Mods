@@ -29,7 +29,9 @@ namespace HeadUnit
 
         public void Dispose() { if (Texture != null) UnityEngine.Object.Destroy(Texture); }
 
-        public void ZoomBy(int d) { Zoom = Mathf.Clamp(Zoom + d, 0, Zooms.Length - 1); _next = 0f; }
+        public void ZoomBy(int d) => SetZoom(Zoom + d);
+        /// The zoom the car's screen is at (UnitState.Zoom): redrawn at once when it changes.
+        public void SetZoom(int z) { z = Mathf.Clamp(z, 0, Zooms.Length - 1); if (z != Zoom) { Zoom = z; _next = 0f; } }
 
         public static string ZoomText(int z) { float m = Zooms[z]; return m >= 1000f ? $"{m / 1000f:0.#} km" : $"{m:0} m"; }
 
