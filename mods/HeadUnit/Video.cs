@@ -165,6 +165,7 @@ namespace HeadUnit
         private float _nextCheck, _failedAt, _lastSeek = -100f;
         private bool _seeking;
         private float _endedSentAt = -100f;
+        private int _toolsSeen = Ytdlp.ToolsVersion;
 
         public Video(GameObject unit)
         {
@@ -277,6 +278,14 @@ namespace HeadUnit
             Prune();
             var cur = s.Current;
             if (cur == null) { if (VideoId != null || _wantId != null) Stop(); return; }
+            // a program arrived or was updated (DOWNLOAD, UPDATE): a video that failed is tried again now, its tries
+            // counted afresh (a joiner's videos failed while yt-dlp downloaded, spent their retries, and stayed failed)
+            if (_toolsSeen != Ytdlp.ToolsVersion)
+            {
+                _toolsSeen = Ytdlp.ToolsVersion;
+                _retries.Clear();
+                if (Problem != null && Problem != "loading..." && _wantId == cur.VideoId) { Problem = null; _wantId = null; VideoId = null; }
+            }
             // a video that couldn't be fetched or played is tried again after a while
             bool failed = Problem != null && Problem != "loading..." && Problem != NoCodecs && Time.realtimeSinceStartup - _failedAt > RetryS;
             if (failed && _wantId == cur.VideoId)

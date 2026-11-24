@@ -9,9 +9,11 @@ namespace HeadUnit
     /// On every head unit item (added to the model prefabs, so every spawned unit has it). Finds the car it sits in and
     /// that car's shared state (UnitState: the YouTube queue, what plays and where, its volume), and shows it.
     ///
-    /// Each player picks their own tab (RADIO, MEDIA, NAV): the tab isn't shared, so the driver can look at the map
-    /// while a passenger watches. The video plays on whatever tab is open, alongside the game's radio (both have their
-    /// own volume and switch). Work is done only near the local player: a unit 2 km away plays nothing here.
+    /// The tab (RADIO, MEDIA, NAV) is the car's, in its shared state: one player switching it switches it for everyone
+    /// in the car, as on one real screen (a playtest: the host went to NAV and the passenger's screen stayed on MEDIA).
+    /// What is inside a tab stays each player's own: the queue list, FULL, BIG, a dialog being typed in, the map's zoom
+    /// and hints. The video plays on whatever tab is open, alongside the game's radio (both have their own volume and
+    /// switch). Work is done only near the local player: a unit 2 km away plays nothing here.
     public sealed partial class UnitBehaviour : MonoBehaviour
     {
         public static readonly List<UnitBehaviour> All = new List<UnitBehaviour>();
@@ -32,9 +34,17 @@ namespace HeadUnit
         private Video _video;
         private MapView _map;
 
-        /// This player's view of the unit (not shared): the tab, the queue list, FULL, the next-bend hint.
+        /// The tab shown: the car's (UnitState.Tab) once there is a state, set here at once when this player switches it
+        /// (the edit goes to the state's owner and comes back).
         public Mode Tab = Mode.Radio;
+        /// The shared tab last seen: only a change of it moves this screen (an edit of this player's still on its way
+        /// doesn't bounce the screen back meanwhile).
+        private Mode _seenTab; private bool _tabSeen;
+        /// This player's view of the unit (not shared): the queue list, FULL, the next-bend hint.
         private bool _listOpen, _full, _hints = true;
+        /// The tools dialog opened from the MEDIA tab's GET TOOLS (a video that can't play here): NOT NOW closes it
+        /// rather than going on to a link.
+        private bool _toolsOnly;
         /// The queue list's first row when scrolled (UP / DOWN, the mouse wheel over the list); -1: around what plays.
         private int _listTop = -1;
 
@@ -79,6 +89,13 @@ namespace HeadUnit
 
             if (Time.realtimeSinceStartup >= _findAt) { _findAt = Time.realtimeSinceStartup + 1f; Bind(); }
             var s = State;
+            // another player switched the car's tab (or this car's state was just found): this screen follows
+            if (s != null && (!_tabSeen || s.Tab != _seenTab))
+            {
+                _tabSeen = true; _seenTab = s.Tab;
+                if (Tab != s.Tab) { Tab = s.Tab; _listOpen = false; _full = false; _listTop = -1; }
+            }
+            else if (s == null) _tabSeen = false;   // out of the car: the next car's state is followed from its first sight
             bool radioOn = Radio == null || Radio.ON;
             bool powered = Powered;
 
@@ -120,6 +137,9 @@ namespace HeadUnit
                     overlay = f >= 0f ? $"downloading the video {Mathf.RoundToInt(f * 100f)}%" : c >= 0f ? $"converting the video for this machine {Mathf.RoundToInt(c * 100f)}%" : "loading...";
                     Touch.Progress(f >= 0f ? f : c);
                 }
+                else if (NeedsTools) overlay = "this machine can't play YouTube yet: each player needs their own yt-dlp and Deno"
+                    + (Plugin.Convert.Value && Ytdlp.Present ? " and ffmpeg" : "") + ". Press GET TOOLS";
+                else if (YtdlpFailed) overlay = _video.Problem + "\nstill failing? an old yt-dlp is the usual cause: press UPDATE";
                 else overlay = _video.Problem ?? (s.Playing ? "" : "paused");
                 if (!_listOpen && !_full && hint != null) overlay = hint + (overlay.Length > 0 ? "\n" + overlay : "");
                 if (!_listOpen && flash != null) overlay = flash + (overlay.Length > 0 ? "\n" + overlay : "");
@@ -208,7 +228,11 @@ namespace HeadUnit
                 key = "dialog-ytdlp";
                 bottom.Add(("download", "DOWNLOAD", () => { CloseDialog(); Ytdlp.Download(); }, false));
                 // without yt-dlp nothing plays; without ffmpeg only 360p: then on to the link
-                bottom.Add(("notnow", "NOT NOW", () => { if (Ytdlp.Present) { Ytdlp.FfmpegDeclined = true; _dialog = Dialog.Link; _link = ""; } else CloseDialog(); }, false));
+                bottom.Add(("notnow", "NOT NOW", () =>
+                {
+                    if (Ytdlp.Present) Ytdlp.FfmpegDeclined = true;
+                    if (Ytdlp.Present && !_toolsOnly) { _dialog = Dialog.Link; _link = ""; } else CloseDialog();
+                }, false));
             }
             else if (Tab == Mode.Radio)
             {
@@ -262,9 +286,17 @@ namespace HeadUnit
                     bottom.Add(("next", ">|", () => Edit(w => w.Byte((byte)Op.Next)), false));
                     bottom.Add(("vol-", "VOL -", () => VideoVolume(-0.1f), false));
                     bottom.Add(("vol+", "VOL +", () => VideoVolume(0.1f), false));
-                    bottom.Add(("link", "+ ADD", () => { _dialog = Ytdlp.Present && !Ytdlp.OfferFfmpeg ? Dialog.Link : Dialog.Ytdlp; _link = ""; }, false));
+                    // without the programs, + ADD is where they are offered: named for it while the queue can't play here
+                    bool tools = NeedsTools;
+                    bottom.Add(("link", tools ? "GET TOOLS" : "+ ADD", () =>
+                    {
+                        _toolsOnly = tools;
+                        _dialog = tools || !Ytdlp.Present || Ytdlp.OfferFfmpeg ? Dialog.Ytdlp : Dialog.Link; _link = "";
+                    }, tools));
                     bottom.Add(("list", "LIST", () => { _listOpen = true; _listTop = -1; }, false));
-                    bottom.Add(("full", "FULL", () => { if (_video != null && _video.Ready) _full = true; }, false));
+                    // FULL has nothing to show while yt-dlp fails: the same place updates it
+                    if (YtdlpFailed) bottom.Add(("update", "UPDATE", Ytdlp.Update, true));
+                    else bottom.Add(("full", "FULL", () => { if (_video != null && _video.Ready) _full = true; }, false));
                 }
             }
             else
@@ -273,6 +305,7 @@ namespace HeadUnit
                 bottom.Add(("zoom+", "ZOOM +", () => { if (_map != null) _map.ZoomBy(-1); }, false));
                 bottom.Add(("hints", _hints ? "HINTS: ON" : "HINTS: OFF", () => _hints = !_hints, _hints));
             }
+            if (Tab == Mode.Video && _dialog == Dialog.None && !_listOpen) key += (NeedsTools ? "t" : "") + (YtdlpFailed ? "u" : "");
             Touch.Layout(key, top, bottom, list, cols: cols, listTop: _dialog == Dialog.Results ? 0.2f : Tab == Mode.Radio ? 0.3f : 0f);
         }
 
@@ -289,7 +322,29 @@ namespace HeadUnit
             _listTop = Mathf.Clamp(now + rows, 0, maxTop);
         }
 
-        private void SetTab(Mode m) { _listOpen = false; _full = false; CloseDialog(); Tab = m; }
+        /// This player switches the tab: here at once, and for everyone in the car through the shared state.
+        private void SetTab(Mode m)
+        {
+            _listOpen = false; _full = false; CloseDialog();
+            if (Tab == m) return;
+            Tab = m;
+            Edit(w => { w.Byte((byte)Op.Tab); w.Byte((byte)m); });
+        }
+
+        /// The car's queue has a video and this machine lacks what plays it (each player downloads their own: one who
+        /// never pressed + ADD, a passenger, had none and saw only "yt-dlp is not installed").
+        private bool NeedsTools
+        {
+            get
+            {
+                var s = State;
+                if (s == null || s.Current == null || Ytdlp.Downloading) return false;
+                return !Ytdlp.Present || (Plugin.Convert.Value && !Ytdlp.HasFfmpeg);
+            }
+        }
+
+        /// yt-dlp is there but couldn't fetch the video playing (an old yt-dlp, mostly: YouTube changes often).
+        private bool YtdlpFailed => !Ytdlp.Downloading && Ytdlp.Present && _video != null && _video.Problem != null && _video.Problem.StartsWith("yt-dlp:");
 
         /// This player's video volume, by `d`: each player hears the car's video as loud as they set it (the config's
         /// Video.Volume, kept on this machine), so nobody turns it up or down for the others.
@@ -502,6 +557,7 @@ namespace HeadUnit
                 var go = new GameObject("HeadUnitState");
                 DontDestroyOnLoad(go);
                 var h = go.AddComponent<StateHolder>();
+                h.State.Tab = Tab;   // the tab this player is on (a first video added from MEDIA kept the screen on RADIO)
                 // the car shared first, so the state carries its session id where it has one at once (with the local
                 // key read before, a state made in a session started out under a number only this machine knows)
                 if (MpApi.InSession && MpApi.WorldObjectId(Car.gameObject) == 0) MpApi.ShareWorldObject(Car.gameObject);

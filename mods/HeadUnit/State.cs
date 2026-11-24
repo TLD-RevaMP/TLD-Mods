@@ -13,8 +13,10 @@ namespace HeadUnit
         public int AddedBy;
     }
 
-    /// What everyone in one car shares on its head unit: the YouTube queue, what plays and where, its volume. Which tab
-    /// a player looks at is their own (UnitBehaviour), as is the radio (the game shares that itself).
+    /// What everyone in one car shares on its head unit: the YouTube queue, what plays and where, its volume, and the
+    /// tab on the screen (RADIO, MEDIA, NAV: one player switching it switches it for everyone, as one screen would).
+    /// The views inside a tab (the queue list, FULL, a dialog, the map's zoom) stay each player's own (UnitBehaviour);
+    /// the radio is shared by the game itself.
     /// Playback is a position on the session clock, never a stream:
     /// position = Playing ? AnchorPos + (SessionTime - AnchorTime) : AnchorPos. Every machine plays the video itself
     /// and keeps to that (Video.cs).
@@ -27,6 +29,7 @@ namespace HeadUnit
         public bool Playing;
         public double AnchorTime;        // session time of the last play / pause / seek
         public float AnchorPos;          // video position then
+        public Mode Tab = Mode.Radio;    // the tab on the screen (written last: a record without it reads as RADIO)
 
         public const int MaxQueue = 200;
         /// A title's longest, in UTF-8 bytes: 200 of them stay under the record's 32 KB, in any script (60 Japanese
@@ -59,6 +62,7 @@ namespace HeadUnit
             w.UInt(Car); w.Float(Volume); w.VarUInt((uint)Index); w.Bool(Playing); w.Double(AnchorTime); w.Float(AnchorPos);
             w.VarUInt((uint)Queue.Count);
             foreach (var q in Queue) { w.String(q.VideoId); w.String(q.Title); w.Float(q.Duration); w.VarUInt((uint)q.AddedBy); }
+            w.Byte((byte)Tab);
         }
 
         public bool Read(RecordReader r)
@@ -73,6 +77,10 @@ namespace HeadUnit
                 if (r.Bad || !Ytdlp.ValidVideoId(it.VideoId)) return false;
                 q.Add(it);
             }
+            // the tab came after the queue (0.3.0): a record from before has none
+            byte tab = r.Remaining >= 1 ? r.Byte() : (byte)Mode.Radio;
+            if (r.Bad || tab > (byte)Mode.Nav) return false;
+            Tab = (Mode)tab;
             Car = car; Volume = Mathf.Clamp01(vol); Index = index; Playing = playing; AnchorTime = at; AnchorPos = Mathf.Max(0f, pos);
             Queue.Clear(); Queue.AddRange(q);
             return true;
@@ -80,7 +88,7 @@ namespace HeadUnit
     }
 
     /// The edits a player can ask the unit's owner for (UnitStateType.OnEdit).
-    public enum Op : byte { Volume = 1, Play = 2, Pause = 3, Seek = 4, Next = 5, Prev = 6, Add = 7, Remove = 8, Jump = 9, Clear = 11, Ended = 12 }
+    public enum Op : byte { Volume = 1, Play = 2, Pause = 3, Seek = 4, Next = 5, Prev = 6, Add = 7, Remove = 8, Jump = 9, Clear = 11, Ended = 12, Tab = 13 }
 
     /// One shared object per car with a head unit in use: it carries the UnitState. It has no body of its own (an
     /// empty GameObject); the unit in the car's radio slot finds it by the car's id. Whoever first uses a unit in a
@@ -202,6 +210,13 @@ namespace HeadUnit
                     s.Queue.RemoveAt(i);
                     if (i < s.Index) s.Index--;
                     else if (i == s.Index) { s.AnchorPos = 0f; s.AnchorTime = now; if (s.Index >= s.Queue.Count) s.Playing = false; }
+                    return true;
+                }
+                case Op.Tab:
+                {
+                    byte t = e.Byte();
+                    if (e.Bad || t > (byte)Mode.Nav || (Mode)t == s.Tab) return false;
+                    s.Tab = (Mode)t;
                     return true;
                 }
                 case Op.Clear:

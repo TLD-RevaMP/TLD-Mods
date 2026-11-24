@@ -57,6 +57,12 @@ namespace HeadUnit
         public static bool Downloading;
         /// The yt-dlp / Deno download's progress, 0–1 (-1: none running).
         public static float DownloadFrac = -1f;
+        /// Goes up each time a program arrives or is updated: a video that failed for want of it is tried again at once
+        /// (Video.Follow), not after its retries were spent. A player who joins a car where others already play
+        /// videos has no yt-dlp yet: what the host queued failed three times while they downloaded it, and never
+        /// played for them.
+        public static int ToolsVersion;
+        private static void ToolsChanged() { ToolsVersion++; PrefetchFailed.Clear(); }
 
         private static readonly ConcurrentQueue<Action> MainThread = new ConcurrentQueue<Action>();
         /// The videos being fetched, and who waits for each (a prefetch, then the player when it comes up).
@@ -79,6 +85,7 @@ namespace HeadUnit
             Deno = Path.Combine(Dir, "deno.exe");
             FfmpegDir = Path.Combine(Dir, "ffmpeg");
             Ffmpeg = Path.Combine(FfmpegDir, "ffmpeg.exe");
+            try { if (File.Exists(Exe + ".old")) File.Delete(Exe + ".old"); } catch { }   // left by an update while it ran
             CacheDir = Path.Combine(cacheDir, "HeadUnit");
             Directory.CreateDirectory(CacheDir);
             Clear();   // what an earlier game left (a crash, or a file the player still held when it closed)
@@ -129,7 +136,7 @@ namespace HeadUnit
         public static void List(string link, Action<List<Entry>> done)
         {
             if (!Present) { Status = "yt-dlp is not installed"; done(null); return; }
-            var args = "--flat-playlist --playlist-end 100 --no-warnings --print \"%(id)s\t%(title)s\t%(duration)s\" \"" + link + "\"";
+            var args = "--flat-playlist --playlist-end 100 --no-warnings --encoding utf-8 --print \"%(id)s\t%(title)s\t%(duration)s\" \"" + link + "\"";
             Run(args, 60000, (code, outp, err) =>
             {
                 if (code != 0) { Status = "yt-dlp: " + FirstLine(err); done(null); return; }
@@ -154,6 +161,7 @@ namespace HeadUnit
             bool merge = HasFfmpeg;
             int h = merge ? Mathf.Clamp(Plugin.MaxHeight.Value, 144, 1080) : 360;
             string file = Path.Combine(CacheDir, $"{videoId}_{h}.mp4");
+            string outTemplate = file.Replace("%", "%%");   // -o is a template: a % in the game's path is not one
             bool convert = Plugin.Convert.Value;
             string ready = CachedFile(videoId, h);
             if (File.Exists(ready)) { try { File.SetLastWriteTimeUtc(ready, DateTime.UtcNow); } catch { } done(FileUrl(ready)); return; }
@@ -187,7 +195,7 @@ namespace HeadUnit
                 string client = k < clients.Length ? clients[k] : null;
                 string extra = client != null ? $"--extractor-args \"youtube:player_client={client}\" " : "";
                 string ff = merge ? $"--ffmpeg-location \"{FfmpegDir}\" --merge-output-format mp4 " : "";
-                string args = $"--ignore-config -f \"{fmt}\" -o \"{file}\" --no-playlist --no-warnings --no-update --newline --progress-template \"download:%(progress._percent_str)s\" "
+                string args = $"--ignore-config -f \"{fmt}\" -o \"{outTemplate}\" --no-playlist --no-warnings --no-update --newline --progress-template \"download:%(progress._percent_str)s\" "
                     + $"--js-runtimes \"deno:{Deno}\" {ff}{extra}\"https://www.youtube.com/watch?v={videoId}\"";
                 Run(args, 20 * 60000, (code, outp, err) =>
                 {
@@ -326,8 +334,13 @@ namespace HeadUnit
             catch (Exception e) { Plugin.Log.LogWarning("video cache: " + e.Message); }
         }
 
+        /// yt-dlp writes its output in the console's code page unless told otherwise (Windows: cp1252), which turned
+        /// every title in another script into question marks: read as UTF-8 here, so it writes UTF-8 (--encoding where
+        /// titles are read; the environment too, for what it prints elsewhere).
+        private static readonly Dictionary<string, string> Utf8 = new Dictionary<string, string> { ["PYTHONIOENCODING"] = "utf-8", ["PYTHONUTF8"] = "1" };
+
         private static void Run(string args, int timeoutMs, Action<int, string, string> done, Action<string> line = null) =>
-            Run(Exe, args, timeoutMs, done, line);
+            Run(Exe, args, timeoutMs, done, line, Utf8);
 
         /// The programs running now (yt-dlp, ffmpeg): ended with the game (KillAll), not left converting after it.
         private static readonly ConcurrentDictionary<int, Process> Running = new ConcurrentDictionary<int, Process>();
@@ -433,6 +446,27 @@ namespace HeadUnit
             Downloading = false;
         }
 
+        /// The newest yt-dlp, fetched and checked as the first one was (the player pressed UPDATE). YouTube changes
+        /// often and an old yt-dlp then fails on every video ("Requested format is not available", 403); it was
+        /// downloaded once and never updated (--no-update: it doesn't update itself while fetching).
+        public static void Update()
+        {
+            if (Downloading || !File.Exists(Exe)) return;
+            if (Plugin.Runner == null) { Status = "yt-dlp update couldn't start"; Panel.Flash(Status); return; }
+            Downloading = true; Status = "updating yt-dlp...";
+            Plugin.Runner.StartCoroutine(UpdateRoutine());
+        }
+
+        private static System.Collections.IEnumerator UpdateRoutine()
+        {
+            _gotYtdlp = false;
+            yield return GetYtdlp();
+            if (!_gotYtdlp) yield break;   // Fail said why
+            Status = "yt-dlp updated"; Panel.Flash(Status);
+            Downloading = false;
+        }
+        private static bool _gotYtdlp;
+
         private static System.Collections.IEnumerator GetYtdlp()
         {
             string sums = null;
@@ -457,6 +491,7 @@ namespace HeadUnit
             try { Keep(Exe, data); }
             catch (Exception ex) { Fail("yt-dlp couldn't be saved: " + ex.Message); yield break; }
             Plugin.Log.LogInfo($"yt-dlp downloaded and verified (sha256 {want.Substring(0, 12)}) to {Exe}");
+            _gotYtdlp = true; ToolsChanged();
         }
 
         /// Deno (Windows build, official release) for yt-dlp's JavaScript challenges: the zip checked against the
@@ -490,6 +525,7 @@ namespace HeadUnit
                 if (File.Exists(Deno)) File.Delete(Deno);
                 File.Move(Deno + ".part", Deno);
                 Plugin.Log.LogInfo($"Deno downloaded and verified (sha256 {want.Substring(0, 12)}) to {Deno}");
+                ToolsChanged();
             }
             catch (Exception ex) { Fail("Deno couldn't be unpacked: " + ex.Message); }
         }
@@ -534,6 +570,7 @@ namespace HeadUnit
                 if (Directory.Exists(FfmpegDir)) Directory.Delete(FfmpegDir, true);
                 Directory.Move(tmp, FfmpegDir);
                 Plugin.Log.LogInfo($"ffmpeg downloaded and verified (sha256 {want.Substring(0, 12)}) to {FfmpegDir}");
+                ToolsChanged();
             }
             catch (Exception ex) { Fail("ffmpeg couldn't be unpacked: " + ex.Message); }
         }
@@ -559,11 +596,20 @@ namespace HeadUnit
             }
         }
 
+        /// The new file in place of the old. A program still running (a yt-dlp fetching the next video while it is
+        /// updated) can't be deleted on Windows, but it can be renamed: the old one goes aside and is deleted later.
         internal static void Keep(string path, byte[] data)
         {
             File.WriteAllBytes(path + ".part", data);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                string old = path + ".old";
+                try { if (File.Exists(old)) File.Delete(old); } catch { }
+                if (File.Exists(old)) File.Delete(path);   // the older one still in use: try the plain way
+                else File.Move(path, old);
+            }
             File.Move(path + ".part", path);
+            try { if (File.Exists(path + ".old")) File.Delete(path + ".old"); } catch { }
         }
     }
 }
