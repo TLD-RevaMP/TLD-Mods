@@ -9,7 +9,7 @@ namespace HeadUnit
     /// On every head unit item (added to the model prefabs, so every spawned unit has it). Finds the car it sits in and
     /// that car's shared state (UnitState: the YouTube queue, what plays and where, its volume), and shows it.
     ///
-    /// The screen is the car's, in its shared state: the tab (RADIO, MEDIA, NAV), the map's zoom and the bend hints.
+    /// The screen is the car's, in its shared state: the tab (RADIO, MEDIA, NAV) and the map's zoom.
     /// One player changing them changes them for everyone in the car, as on one real screen (a playtest: the host went
     /// to NAV and the passenger's screen stayed on MEDIA). What a player is in the middle of stays their own: the queue
     /// list, FULL, BIG, a link being typed, a search's results (one player browsing the queue doesn't move the others').
@@ -36,13 +36,13 @@ namespace HeadUnit
         private Video _video;
         private MapView _map;
 
-        /// What the screen shows: the car's (UnitState's tab, zoom and hints) once there is a state, set here at once when
+        /// What the screen shows: the car's (UnitState's tab and zoom) once there is a state, set here at once when
         /// this player changes it (the edit goes to the state's owner and comes back).
         public Mode Tab = Mode.Radio;
-        private int _zoom = 2; private bool _hints = true;
+        private int _zoom = 2;
         /// The car's screen as last seen in its state: only a change there moves this screen (an edit of this player's
         /// still on its way doesn't bounce it back meanwhile).
-        private Mode _seenTab; private int _seenZoom; private bool _seenHints, _screenSeen;
+        private Mode _seenTab; private int _seenZoom; private bool _screenSeen;
         /// This player's own view of the unit (not shared): the queue list, FULL.
         private bool _listOpen, _full;
         /// The tools dialog opened from the MEDIA tab's GET TOOLS (a video that can't play here): NOT NOW closes it
@@ -111,34 +111,31 @@ namespace HeadUnit
             if (!powered) { Show(Color.black, null, ""); return; }
             if (_dialog == Dialog.Results)
             {
-                // one short line: two didn't fit the strip and showed nothing (headunit.py pictures, 2026-10-16)
-                string head = Panel.Flashing ?? "tap a video to add it (blue: added)";
+                // one short line, what was searched: two didn't fit the strip and showed nothing (headunit.py pictures,
+                // 2026-10-16)
+                string head = Panel.Flashing ?? _searched;
                 if (head.Length > 44) head = head.Substring(0, 41).TrimEnd() + "...";
                 Show(new Color(0.05f, 0.05f, 0.07f), null, head, top: true);
                 return;
             }
             if (_dialog != Dialog.None) { Show(new Color(0.05f, 0.05f, 0.07f), null, DialogText()); Touch.Progress(Ytdlp.DownloadFrac); return; }
             if (Ytdlp.Downloading) { Show(Color.black, null, Ytdlp.Status); Touch.Progress(Ytdlp.DownloadFrac); return; }
-            string hint = _hints && IsMyCar() && Nav.Events.Count > 0 && Nav.Events[0].Distance < 400f ? Nav.NextText() : null;
             string flash = Panel.Flashing;
 
             if (Tab == Mode.Video)
             {
                 var cur = s?.Current;
                 string overlay;
-                if (_listOpen) overlay = s == null || s.Queue.Count == 0 ? "the queue is empty" : "";
-                else if (cur == null) overlay = "queue empty: press + ADD for a YouTube or Spotify link, or to search";
+                if (_listOpen) overlay = s == null || s.Queue.Count == 0 ? "queue empty" : "";
+                else if (cur == null) overlay = "queue empty";
                 else if (_video == null || _video.Problem == "loading...")
                 {
                     float f = Ytdlp.VideoFrac(cur.VideoId), c = Ytdlp.ConvertFrac(cur.VideoId);
-                    overlay = f >= 0f ? $"downloading the video {Mathf.RoundToInt(f * 100f)}%" : c >= 0f ? $"converting the video for this machine {Mathf.RoundToInt(c * 100f)}%" : "loading...";
+                    overlay = f >= 0f ? $"downloading {Mathf.RoundToInt(f * 100f)}%" : c >= 0f ? $"converting {Mathf.RoundToInt(c * 100f)}%" : "loading...";
                     Touch.Progress(f >= 0f ? f : c);
                 }
-                else if (NeedsTools(s)) overlay = "this machine can't play YouTube yet: each player needs their own yt-dlp and Deno"
-                    + (Plugin.Convert.Value && Ytdlp.Present ? " and ffmpeg" : "") + ". Press GET TOOLS";
-                else if (YtdlpFailed) overlay = _video.Problem + "\nstill failing? an old yt-dlp is the usual cause: press UPDATE";
+                else if (NeedsTools(s)) overlay = "tools needed";
                 else overlay = _video.Problem ?? (s.Playing ? "" : "paused");
-                if (!_listOpen && !_full && hint != null) overlay = hint + (overlay.Length > 0 ? "\n" + overlay : "");
                 if (!_listOpen && flash != null) overlay = flash + (overlay.Length > 0 ? "\n" + overlay : "");
                 bool pic = !_listOpen && _video != null && _video.Ready;
                 Show(Color.black, pic ? _video.Texture : null, overlay, aspect: pic ? _video.Aspect : -1f);
@@ -146,23 +143,22 @@ namespace HeadUnit
             }
             if (Tab == Mode.Nav)
             {
-                // the map: roads around the car, the road ahead in the unit's colour, heading up (redrawn every frame)
+                // the map: roads around the car, the road ahead in the unit's colour, heading up (redrawn every frame).
+                // Only the map: the bend and slope text over it was spam (playtest 2026-11-24)
                 if (_map == null) _map = new MapView(Model != null ? Model.Screen : new Color(0.3f, 0.7f, 1f));
                 _map.SetZoom(_zoom);
                 if (Car != null) _map.Draw(Car.transform, IsMyCar() ? Nav.Path : null);
-                string t = (IsMyCar() ? Nav.NextText() : "") + "   " + MapView.ZoomText(_map.Zoom);
-                Show(Color.black, _map.Texture, flash ?? t, top: true, aspect: MapView.Wpx / (float)MapView.Hpx);
+                Show(Color.black, _map.Texture, flash ?? "", top: true, aspect: MapView.Wpx / (float)MapView.Hpx);
                 return;
             }
             // the station list fills the middle (Buttons); this line is above it: what plays, the volume
             string fr;
-            if (!radioOn) fr = "radio off: press ON";
+            if (!radioOn) fr = "radio off";
             else if (Radio == null) fr = "radio";
             else fr = (Radio.amfm ? $"AM {Radio.FR:0}" : $"FM {Radio.FR:0.0}") + "  " + (StationName(Radio) ?? "no station")
                 + $"   vol {Mathf.RoundToInt((Radio.Bvolume != null ? Radio.Bvolume.tunedLerp : 0f) * 10f)}";
             var playing = s?.Current;
             if (flash != null) fr += "\n" + flash;
-            else if (hint != null) fr += "\n" + hint;
             else if (playing != null && s.Playing) fr += "\nplaying: " + (playing.Title.Length > 40 ? playing.Title.Substring(0, 40) + "..." : playing.Title);
             Show(Model != null ? Model.Screen * 0.15f : Color.black, null, fr, top: radioOn && Radio != null);
         }
@@ -305,7 +301,6 @@ namespace HeadUnit
             {
                 bottom.Add(("zoom-", "ZOOM -", () => SetZoom(_zoom + 1), false));
                 bottom.Add(("zoom+", "ZOOM +", () => SetZoom(_zoom - 1), false));
-                bottom.Add(("hints", _hints ? "HINTS: ON" : "HINTS: OFF", () => SetHints(!_hints), _hints));
             }
             if (Tab == Mode.Video && _dialog == Dialog.None && !_listOpen) key += (NeedsTools(s) ? "t" : "") + (YtdlpFailed ? "u" : "");
             Touch.Layout(key, top, bottom, list, cols: cols, listTop: _dialog == Dialog.Results ? 0.2f : Tab == Mode.Radio ? 0.3f : 0f);
@@ -331,8 +326,7 @@ namespace HeadUnit
             if (s == null) { _screenSeen = false; return; }   // out of the car: the next car's screen is taken as it is
             if ((!_screenSeen || s.Tab != _seenTab) && Tab != s.Tab) { Tab = s.Tab; _listOpen = false; _full = false; _listTop = -1; }
             if (!_screenSeen || s.Zoom != _seenZoom) _zoom = s.Zoom;
-            if (!_screenSeen || s.Hints != _seenHints) _hints = s.Hints;
-            _screenSeen = true; _seenTab = s.Tab; _seenZoom = s.Zoom; _seenHints = s.Hints;
+            _screenSeen = true; _seenTab = s.Tab; _seenZoom = s.Zoom;
         }
 
         /// This player switches the tab: here at once, and for everyone in the car through the shared state. Sent unless
@@ -351,14 +345,6 @@ namespace HeadUnit
             _zoom = Mathf.Clamp(z, 0, UnitState.MaxZoom);
             var s = State;
             if (s == null || s.Zoom != _zoom) { byte b = (byte)_zoom; Edit(w => { w.Byte((byte)Op.Zoom); w.Byte(b); }); }
-        }
-
-        /// The bend hints on or off, for everyone in the car.
-        private void SetHints(bool on)
-        {
-            _hints = on;
-            var s = State;
-            if (s == null || s.Hints != on) Edit(w => { w.Byte((byte)Op.Hints); w.Bool(on); });
         }
 
         /// The car's queue has a video and this machine lacks what plays it (each player downloads their own: one who
@@ -386,20 +372,15 @@ namespace HeadUnit
 
         private string DialogText()
         {
-            if (_dialog == Dialog.Ytdlp && Ytdlp.Present && Plugin.Convert.Value)
-                return "This machine can't play YouTube's videos as they come (Steam's Proton has no H.264): without ffmpeg (about 80 MB, official build from GitHub, checked against its SHA-256) "
-                    + "no video plays here. Download it to convert them?";
-            if (_dialog == Dialog.Ytdlp && Ytdlp.Present)
-                return "Videos are 360p without ffmpeg. Download ffmpeg (about 80 MB, official build from GitHub, checked against its SHA-256) for "
-                    + $"{Plugin.MaxHeight.Value}p picture and the best sound?";
-            if (_dialog == Dialog.Ytdlp)
-                return "YouTube needs yt-dlp, Deno (it solves YouTube's checks) and ffmpeg (joins HD picture and sound). Download the official releases from GitHub (about 140 MB)? Each is checked against its published SHA-256 before it is kept.";
+            // the download offers say what comes from where and how big, nothing more (a player agrees to it here)
+            if (_dialog == Dialog.Ytdlp && Ytdlp.Present && Plugin.Convert.Value) return "Download ffmpeg from GitHub (80 MB)?";
+            if (_dialog == Dialog.Ytdlp && Ytdlp.Present) return $"Download ffmpeg from GitHub (80 MB) for {Plugin.MaxHeight.Value}p?";
+            if (_dialog == Dialog.Ytdlp) return "Download yt-dlp, Deno and ffmpeg from GitHub (140 MB)?";
+            // a search bar: what is typed (a link or words), nothing explaining the buttons (playtest 2026-11-24)
             string shown = _link.Length > 48 ? "..." + _link.Substring(_link.Length - 45) : _link;
-            string how = TypingInto == this ? "typing: Enter adds or searches, Esc stops typing" : "PASTE a copied link, or TYPE a link or words to search";
-            if (_searching) how = "searching YouTube...";
-            else if (LookupFailed) how += "\nstill failing? an old yt-dlp is the usual cause: press UPDATE";
-            return "A YouTube or Spotify link (video, playlist, album, song), or words to search YouTube\n" + (shown.Length > 0 ? shown : "-") + (TypingInto == this ? "_" : "") + "\n" + how
-                + (Panel.Flashing != null ? "\n" + Panel.Flashing : "");
+            string bar = shown.Length == 0 && TypingInto != this ? "search" : shown + (TypingInto == this ? "_" : "");
+            string status = _searching ? "searching..." : Panel.Flashing;
+            return bar + (status != null ? "\n" + status : "");
         }
 
         private void CloseDialog() { _dialog = Dialog.None; if (TypingInto == this) TypingInto = null; }
@@ -412,7 +393,7 @@ namespace HeadUnit
         private void AddLink()
         {
             string t = _link.Trim();
-            if (t.Length == 0) { Panel.Flash("type or paste a link, or words to search"); return; }
+            if (t.Length == 0) return;
             if (IsLink(t)) { CloseDialog(); Controls.AddLink(this, t); return; }
             if (_searching) return;
             if (TypingInto == this) TypingInto = null;
@@ -591,7 +572,7 @@ namespace HeadUnit
                 DontDestroyOnLoad(go);
                 var h = go.AddComponent<StateHolder>();
                 // the screen as this player has it (a first video added from MEDIA put everyone's screen on RADIO)
-                h.State.Tab = Tab; h.State.Zoom = (byte)Mathf.Clamp(_zoom, 0, UnitState.MaxZoom); h.State.Hints = _hints;
+                h.State.Tab = Tab; h.State.Zoom = (byte)Mathf.Clamp(_zoom, 0, UnitState.MaxZoom);
                 // the car shared first, so the state carries its session id where it has one at once (with the local
                 // key read before, a state made in a session started out under a number only this machine knows)
                 if (MpApi.InSession && MpApi.WorldObjectId(Car.gameObject) == 0) MpApi.ShareWorldObject(Car.gameObject);
@@ -643,18 +624,5 @@ namespace HeadUnit
         public Texture2D MapTexture => _map?.Texture;
         public bool VideoPlaying => _video != null && _video.Player != null && _video.Player.isPlaying;
         public Texture VideoTexture => _video != null && _video.Ready ? _video.Texture : null;
-
-        internal static string Describe(NavEvent e)
-        {
-            string d = e.Distance < 1000f ? $"{Mathf.Round(e.Distance / 10f) * 10f:0} m" : $"{e.Distance / 1000f:0.0} km";
-            switch (e.Kind)
-            {
-                case NavKind.BendLeft: return $"left {e.Amount:0} deg in {d}";
-                case NavKind.BendRight: return $"right {e.Amount:0} deg in {d}";
-                case NavKind.Descent: return $"downhill {e.Amount:0}% in {d}";
-                case NavKind.Climb: return $"uphill {e.Amount:0}% in {d}";
-                default: return $"{e.Note} in {d}";
-            }
-        }
     }
 }

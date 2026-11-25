@@ -68,9 +68,6 @@ namespace HeadUnit
             Events.Sort((a, b) => a.Distance.CompareTo(b.Distance));
         }
 
-        /// The next thing worth saying, for the screen and the panel ("left 60 deg in 300 m").
-        public static string NextText() => Problem ?? (Events.Count == 0 ? "road straight on" : UnitBehaviour.Describe(Events[0]));
-
         /// The road's bones from the point nearest the car onward, in the direction the car faces, chained across road
         /// pieces, up to LookAheadM.
         private static bool PathAhead(Vector3d pos, Vector3 fwd, List<Vector3d> path, List<float> dist)

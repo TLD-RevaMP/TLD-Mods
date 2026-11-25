@@ -446,7 +446,7 @@ namespace HeadUnit
             if (!File.Exists(Exe)) { yield return GetYtdlp(); if (!File.Exists(Exe)) yield break; }
             if (!File.Exists(Deno)) { yield return GetDeno(); if (!File.Exists(Deno)) yield break; }
             if (!HasFfmpeg) { yield return GetFfmpeg(); if (!HasFfmpeg) yield break; }
-            Status = "ready: press + ADD"; Panel.Flash(Status);
+            Status = "ready"; Panel.Flash(Status);
             Downloading = false;
         }
 

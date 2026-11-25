@@ -21,7 +21,7 @@ namespace HeadUnit
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "tldrevamp.headunit";
-        public const string Version = "0.3.0";
+        public const string Version = "0.3.1";
 
         internal static ManualLogSource Log;
         internal static ModInfo Mod;

@@ -4,9 +4,9 @@ A digital head unit for a car's radio slot, and the main example of TLD RevaMP's
 
 In the game: rare loot in a few models, each fitting only some cars. The game's radio keeps working inside it. Its
 touch screen (look at a button and click, as with the game's knobs) has three tabs: the radio, YouTube with a queue,
-and navigation (a map of the roads around the car and the bends and descents ahead). A unit can also be glued
+and navigation (a map of the roads around the car and the road ahead). A unit can also be glued
 anywhere in the car, like any item. In a session, everyone in or near the car sees the same video at the same moment,
-and the same screen: whoever switches to RADIO, MEDIA or NAV, zooms the map or turns the hints off does it for
+and the same screen: whoever switches to RADIO, MEDIA or NAV or zooms the map does it for
 everyone (the radio itself is shared by the game). What a player is in the middle of stays their own: the queue list,
 FULL, BIG, a link being typed, a search's results.
 
@@ -21,8 +21,8 @@ FULL, BIG, a link being typed, a search's results.
   (`MpApi.ShareWorldObject`) and shares the unit's state under the car's session id (`MpApi.Share`,
   `MpApi.WorldObjectId`).
 - **Shared timing, no streaming.** Playback is a start position on the session clock (`MpApi.SessionTime`). Each
-  machine downloads and plays the video itself and stays in step by playing slightly faster or slower, or seeking
-  (`Video.cs`). Only video ids pass between players.
+  machine downloads and plays the video itself, on the audio clock, and seeks when it is more than a second off
+  (`Video.cs`; changing the playback speed made the sound choppy). Only video ids pass between players.
 - **Running without RevaMP.** With no RevaMP (`MpApi.Available` false) it works in single player.
 - **Game items from the game's own.** `Units.cs` clones the game's radio item into new items with their own ids,
   so the game saves, loads and spawns them, and RevaMP shares them with the car.
@@ -36,7 +36,7 @@ FULL, BIG, a link being typed, a search's results.
 | `Plugin.cs` | Settings, API registration, Harmony patches, the per-frame runner |
 | `Units.cs` | The head unit models as game items, and which cars each fits |
 | `UnitBehaviour.cs` | On every unit: finds its car and that car's shared state, and shows it |
-| `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom, hints) |
+| `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom; a hints flag the screen no longer uses) |
 | `Touch.cs`, `Controls.cs`, `Panel.cs` | The touch screen, crosshair clicks, typing a link, the passengers' big picture |
 | `Look.cs` | The unit's body colour, screen and text |
 | `Video.cs` | Plays the video on this machine and keeps it at the shared position |

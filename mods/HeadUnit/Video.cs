@@ -5,17 +5,21 @@ using UnityEngine.Video;
 namespace HeadUnit
 {
     /// Plays one unit's video on this machine and keeps it at the shared position (UnitState.Position on the session
-    /// clock): a small difference is closed by playing 5 % faster or slower, a big one by seeking. The sound comes
+    /// clock): a difference over SeekOverS is closed by seeking. The playback speed always stays 1: it used to be nudged
+    /// 5 % faster or slower for small differences (a joiner's often: the session clock moves a little under it), and
+    /// the sound came out choppy, like static (playtest 2026-11-24, a joiner): Unity feeds a video's sound to its
+    /// AudioSource at the video's speed, which then runs over or short (Unity's forum: buffer overflows). The sound comes
     /// from the unit in the car (3D), at the car's shared video volume. It plays whichever tab a player looks at.
     ///
     /// Each video gets a VideoPlayer of its own, thrown away for the next one: under Proton, preparing a stopped player
     /// again crashed the game in the media framework (playtest 2026-10-15: NAV, back to YouTube, PLAY → crash in
     /// rtworkq). The picture goes into a texture the video's own shape; the screen fits it without stretching.
     ///
-    /// The player runs on real time, as the shared position does: on game time it stood still in the pause menu
-    /// (time scale 0) while the position went on, and the seeks to catch up, four a second, crashed the media
-    /// framework the same way (playtest 2026-10-15, crash while driving after opening the menu). Seeks are also
-    /// spaced out and never stacked.
+    /// The player runs on the audio clock (DSPTime), which goes on in real time as the shared position does: on game
+    /// time it stood still in the pause menu (time scale 0) while the position went on, and the seeks to catch up,
+    /// four a second, crashed the media framework the same way (playtest 2026-10-15, crash while driving after opening
+    /// the menu). Unscaled game time didn't stand still, but it moves in frame-sized steps, and the sound, played on the
+    /// audio clock, was corrected to it. Seeks are also spaced out and never stacked.
     ///
     /// A player is hardly ever destroyed while the game runs: under Proton, destroying a VideoPlayer (playing or not,
     /// at once or seconds later) crashed the game in rtworkq when the next one started, two runs in three (huprev.py,
@@ -36,7 +40,7 @@ namespace HeadUnit
         public bool Ready => Player != null && Player.isPrepared && Texture != null && !_placeholder.Contains(Player);
         /// Width over height of the picture (16:9 until the video says).
         public float Aspect = 16f / 9f;
-        public static readonly float SeekOverS = 1.0f, NudgeOverS = 0.08f, RetryS = 30f, SeekGapS = 3f;
+        public static readonly float SeekOverS = 1.0f, RetryS = 30f, SeekGapS = 3f;
         public static readonly int MaxTextureWidth = 1920;
         public static bool Trace = false;   // makes, drops and seeks in the log
         public static float MakeGapS = 1.5f;
@@ -50,7 +54,8 @@ namespace HeadUnit
         private readonly Dictionary<VideoPlayer, string> _idOf = new Dictionary<VideoPlayer, string>();
         private readonly HashSet<VideoPlayer> _failed = new HashSet<VideoPlayer>();
         private readonly HashSet<VideoPlayer> _placeholder = new HashSet<VideoPlayer>();
-        public const string NoCodecs = "this machine can't decode YouTube's video (Steam's Proton has no H.264): the head unit converts it with ffmpeg, which + ADD offers to download";
+        /// "can't decode YouTube's video" is what headunit2.py looks for (TLD-RevaMP's tools)
+        public const string NoCodecs = "can't decode YouTube's video: needs ffmpeg";
 
         /// Valve's Proton has no H.264 decoder: the media framework plays a 4 s stand-in clip instead of any video
         /// (the laptop, Proton 11.0, 2026-10-15: length 4.0, 120 frames at 30/s, for 213 s and 216 s videos; GE-Proton
@@ -220,10 +225,14 @@ namespace HeadUnit
             p.source = VideoSource.Url;
             p.waitForFirstFrame = true;
             p.skipOnDrop = true;
-            p.timeUpdateMode = VideoTimeUpdateMode.UnscaledGameTime;
+            p.timeUpdateMode = VideoTimeUpdateMode.DSPTime;
             p.seekCompleted += _ => { if (p == Player) _seeking = false; };
             var a = _host.AddComponent<AudioSource>();
             a.spatialBlend = 1f; a.minDistance = 1.5f; a.maxDistance = 25f; a.rolloffMode = AudioRolloffMode.Linear;
+            // as RevaMP's voices and TV Browser's TV: no Doppler (this object is moved to the unit every frame, so a
+            // moving car wobbled the pitch), and a priority over the game's own sounds, so Unity's voice limit doesn't
+            // cut it in and out
+            a.dopplerLevel = 0f; a.priority = 32;
             a.playOnAwake = false;
             p.audioOutputMode = VideoAudioOutputMode.AudioSource;
             p.SetTargetAudioSource(0, a);
@@ -356,10 +365,7 @@ namespace HeadUnit
             if (!Player.isPlaying) { SeekTo(want, force: true); Player.Play(); return; }
             if (Time.realtimeSinceStartup < _nextCheck) return;
             _nextCheck = Time.realtimeSinceStartup + 0.25f;
-            float diff = want - (float)Player.time;   // > 0: we are behind
-            if (Mathf.Abs(diff) > SeekOverS) { if (SeekTo(want)) Player.playbackSpeed = 1f; }
-            else if (Mathf.Abs(diff) > NudgeOverS && Player.canSetPlaybackSpeed) Player.playbackSpeed = diff > 0 ? 1.05f : 0.95f;
-            else if (Player.playbackSpeed != 1f) Player.playbackSpeed = 1f;
+            if (Mathf.Abs(want - (float)Player.time) > SeekOverS) SeekTo(want);
         }
 
         /// One seek at a time, at most one every SeekGapS (unless forced: starting to play).
