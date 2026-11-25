@@ -39,6 +39,7 @@ RevaMP's record format from a TLD-RevaMP checkout (`TLD_REVAMP_DIR`, by default 
 
     dotnet run --project tests/TvBrowserCoreTest.csproj
     dotnet run --project tests/HeadUnitStateTest.csproj
+    dotnet run --project tests/HeadUnitScreenTest.csproj   # also draws every screen to screens/ beside its build (or HU_SCREENS)
     TVB_CHROME=/path/to/chrome-headless-shell dotnet run --project tests/TvBrowserPageTest.csproj   # skipped without it
 
 The in-game tests for the mods stay in TLD-RevaMP's `tools/` (`headunit.py`, `tvbrowser.py`, `cartrailer.py`,

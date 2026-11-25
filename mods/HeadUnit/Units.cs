@@ -27,7 +27,7 @@ namespace HeadUnit
             public int Id;                 // item id (set at registration)
             public string[] Cars;          // itemdatabase.i names of the cars it fits
             public int LootWeight;         // against 100 for each of the game's radios
-            public Color Body, Screen;
+            public Color Body, Screen;     // the bezel; the screen's phosphor (everything on it is drawn in it)
             public string Tag => "headunit." + Key;
         }
 
@@ -37,11 +37,11 @@ namespace HeadUnit
         public static readonly Model[] Models =
         {
             new Model { Key = "dh1", Name = "Voltline DH-1", Cars = new[] { "car01", "car02", "car02k", "car03", "car03k" }, LootWeight = 80,
-                        Body = new Color(0.12f, 0.12f, 0.13f), Screen = new Color(0.25f, 0.6f, 1f) },
+                        Body = new Color(0.12f, 0.12f, 0.13f), Screen = new Color(0.541f, 0.847f, 1f) },     // #8AD8FF, ice blue
             new Model { Key = "dh2", Name = "Voltline DH-2 Wide", Cars = new[] { "car04", "car05", "car06", "car06p", "car07" }, LootWeight = 53,
-                        Body = new Color(0.18f, 0.18f, 0.2f), Screen = new Color(0.3f, 1f, 0.6f) },
+                        Body = new Color(0.18f, 0.18f, 0.2f), Screen = new Color(0.361f, 1f, 0.541f) },      // #5CFF8A, green
             new Model { Key = "rx", Name = "Kestrel RX Pro", Cars = new[] { "car08", "car08c", "car09", "car09P", "car09T", "car10", "car10k", "car11", "bus01", "bus02", "bus03" }, LootWeight = 27,
-                        Body = new Color(0.08f, 0.08f, 0.08f), Screen = new Color(1f, 0.55f, 0.2f) },
+                        Body = new Color(0.08f, 0.08f, 0.08f), Screen = new Color(1f, 0.706f, 0.235f) },     // #FFB43C, amber
         };
 
         public static Model ById(int id) { foreach (var m in Models) if (m.Id == id) return m; return null; }

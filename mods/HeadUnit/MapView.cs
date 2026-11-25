@@ -4,27 +4,32 @@ using UnityEngine;
 
 namespace HeadUnit
 {
-    /// The NAV tab's map: the game's roads around the car (the road generators' pieces in the loaded area: their bones
-    /// where a piece is built, a straight line from end to end where it isn't yet), the road ahead in the unit's
-    /// colour, the car as an arrow, heading up. Redrawn up to 30 times a second (twice a second looked like an old
-    /// car's navigation, playtest 2026-10-15), on this machine only.
+    /// The NAV tab's map, drawn in the screen's phosphor as the rest of the CRT: the game's roads around the car (the
+    /// road generators' pieces in the loaded area: their bones where a piece is built, a dashed line from end to end
+    /// where it isn't yet), the main road brighter, the road ahead brightest, the car as a chevron, heading up, on a
+    /// dot grid. Redrawn up to 30 times a second (twice a second looked like an old car's navigation, playtest
+    /// 2026-10-15), on this machine only.
     public sealed class MapView : IDisposable
     {
-        public const int Wpx = 384, Hpx = 128;                      // the picture's shape: the screen's middle (3 : 1)
+        public const int Wpx = 301, Hpx = 220;                      // the map's window (602 × 440 on the screen), a pixel every two
         public static readonly float[] Zooms = { 60f, 120f, 250f, 500f, 1000f, 2000f };   // metres from the car to the top edge
         public int Zoom = 2;
         public Texture2D Texture;
         private readonly Color32[] _px = new Color32[Wpx * Hpx], _clear = new Color32[Wpx * Hpx];
         public static readonly float FrameS = 1f / 30f;
-        private readonly Color32 _bg = new Color32(14, 17, 22, 255), _road = new Color32(150, 155, 165, 255), _unbuilt = new Color32(70, 74, 82, 255), _main = new Color32(240, 222, 120, 255), _ahead, _car;
+        private readonly Color32 _bg = new Color32(5, 8, 6, 255), _road, _unbuilt, _ahead, _car;
+        /// The main road's colour and the other roads' (the probe counts them).
+        public readonly Color32 MainColor, RoadColor;
         private float _next;
         private static float _roadsAt; private static readonly List<List<Vector3d>> _roads = new List<List<Vector3d>>(); private static readonly List<bool> _built = new List<bool>(), _mainRoad = new List<bool>();   // the main road (roadTypeEmu.mainRoad): its own colour
 
         public MapView(Color accent)
         {
-            _ahead = accent; _car = Color.white;
-            for (int i = 0; i < _clear.Length; i++) _clear[i] = _bg;
-            Texture = new Texture2D(Wpx, Hpx, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            Color32 Lit(float k) => new Color32((byte)(5 + accent.r * 250f * k), (byte)(8 + accent.g * 247f * k), (byte)(6 + accent.b * 249f * k), 255);
+            _ahead = _car = Lit(1f); MainColor = Lit(0.7f); RoadColor = Lit(0.42f); _road = RoadColor; _unbuilt = Lit(0.2f);
+            var dot = Lit(0.16f);
+            for (int y = 0; y < Hpx; y++) for (int x = 0; x < Wpx; x++) _clear[y * Wpx + x] = x % 8 == 4 && y % 8 == 4 ? dot : _bg;
+            Texture = new Texture2D(Wpx, Hpx, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
         }
 
         public void Dispose() { if (Texture != null) UnityEngine.Object.Destroy(Texture); }
@@ -58,15 +63,14 @@ namespace HeadUnit
             for (int r = 0; r < _roads.Count; r++)
             {
                 var pts = _roads[r];
-                for (int i = 1; i < pts.Count; i++) Line(P(pts[i - 1]), P(pts[i]), _mainRoad[r] ? _main : _built[r] ? _road : _unbuilt, _mainRoad[r] ? (_built[r] ? 3 : 2) : _built[r] ? 2 : 1);
+                for (int i = 1; i < pts.Count; i++) Line(P(pts[i - 1]), P(pts[i]), _mainRoad[r] ? MainColor : _built[r] ? _road : _unbuilt, _mainRoad[r] ? (_built[r] ? 3 : 2) : _built[r] ? 2 : 1, dashed: !_built[r]);
             }
             if (ahead != null) for (int i = 1; i < ahead.Count; i++) Line(P(ahead[i - 1]), P(ahead[i]), _ahead, 3);
-            // the car: an arrow pointing up
-            for (int y = 0; y < 12; y++)
-            {
-                int half = (12 - y) / 3;
-                for (int x = -half; x <= half; x++) Dot((int)cx + x, (int)cy - 4 + y, _car);
-            }
+            // the car: the NAV tab's chevron, pointing up (rows from its tip, as the screen's icon)
+            string[] chevron = { ".....##.....", "....####....", "...######...", "..###..###..", ".###....###." };
+            for (int row = 0; row < chevron.Length; row++)
+                for (int x = 0; x < 12; x++)
+                    if (chevron[row][x] == '#') { Dot((int)cx - 6 + x, (int)cy + 4 - row * 2, _car); Dot((int)cx - 6 + x, (int)cy + 3 - row * 2, _car); }
             Texture.SetPixels32(_px);
             Texture.Apply(false);
         }
@@ -101,7 +105,7 @@ namespace HeadUnit
             }
         }
 
-        private void Line(Vector2 a, Vector2 b, Color32 c, int width)
+        private void Line(Vector2 a, Vector2 b, Color32 c, int width, bool dashed = false)
         {
             // clip to the picture (with a margin) before stepping along it
             if ((a.x < -50 && b.x < -50) || (a.x > Wpx + 50 && b.x > Wpx + 50) || (a.y < -50 && b.y < -50) || (a.y > Hpx + 50 && b.y > Hpx + 50)) return;
@@ -111,6 +115,7 @@ namespace HeadUnit
             int h = width / 2;
             for (int i = 0; i <= steps; i++)
             {
+                if (dashed && i % 8 >= 4) continue;
                 var p = Vector2.Lerp(a, b, i / (float)steps);
                 int x = Mathf.RoundToInt(p.x), y = Mathf.RoundToInt(p.y);
                 for (int oy = -h; oy <= width - 1 - h; oy++)

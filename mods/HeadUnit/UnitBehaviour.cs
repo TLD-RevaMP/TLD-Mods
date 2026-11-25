@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using TLDRevamp.Multiplayer;
-using TMPro;
 using UnityEngine;
 
 namespace HeadUnit
@@ -114,217 +113,257 @@ namespace HeadUnit
             else _video?.Hold();
 
             if (_full && (Tab != Mode.Video || _video == null || !_video.Ready)) _full = false;
-            Buttons(s, powered, radioOn);
-            if (Touch == null) return;
-            Touch.Progress(-1f);
-            if (!powered) { Show(Color.black, null, ""); return; }
-            if (_dialog == Dialog.Results)
-            {
-                // one short line, what was searched: two didn't fit the strip and showed nothing (headunit.py pictures,
-                // 2026-10-16)
-                string head = Panel.Flashing ?? s?.Searched ?? "";
-                if (head.Length > 44) head = head.Substring(0, 41).TrimEnd() + "...";
-                Show(new Color(0.05f, 0.05f, 0.07f), null, head, top: true);
-                return;
-            }
-            if (_dialog != Dialog.None) { Show(new Color(0.05f, 0.05f, 0.07f), null, DialogText()); Touch.Progress(Ytdlp.DownloadFrac); return; }
-            if (Ytdlp.Downloading) { Show(Color.black, null, Ytdlp.Status); Touch.Progress(Ytdlp.DownloadFrac); return; }
-            string flash = Panel.Flashing;
-
-            if (Tab == Mode.Video)
-            {
-                var cur = s?.Current;
-                string overlay;
-                if (_listOpen) overlay = s == null || s.Queue.Count == 0 ? "queue empty" : "";
-                else if (cur == null) overlay = "queue empty";
-                else if (_video == null || _video.Problem == "loading...")
-                {
-                    float f = Ytdlp.VideoFrac(cur.VideoId), c = Ytdlp.ConvertFrac(cur.VideoId);
-                    overlay = f >= 0f ? $"downloading {Mathf.RoundToInt(f * 100f)}%" : c >= 0f ? $"converting {Mathf.RoundToInt(c * 100f)}%" : "loading...";
-                    Touch.Progress(f >= 0f ? f : c);
-                }
-                else if (NeedsTools(s)) overlay = "tools needed";
-                else overlay = _video.Problem ?? "";   // paused: the PLAY button says so
-                if (!_listOpen && flash != null) overlay = flash + (overlay.Length > 0 ? "\n" + overlay : "");
-                bool pic = !_listOpen && _video != null && _video.Ready;
-                Show(Color.black, pic ? _video.Texture : null, overlay, aspect: pic ? _video.Aspect : -1f);
-                return;
-            }
-            if (Tab == Mode.Nav)
-            {
-                // the map: roads around the car, the road ahead in the unit's colour, heading up (redrawn every frame).
-                // Only the map: the bend and slope text over it was spam (playtest 2026-11-24)
-                if (_map == null) _map = new MapView(Model != null ? Model.Screen : new Color(0.3f, 0.7f, 1f));
-                _map.SetZoom(_zoom);
-                if (Car != null) _map.Draw(Car.transform, IsMyCar() ? Nav.Path : null);
-                Show(Color.black, _map.Texture, flash ?? "", top: true, aspect: MapView.Wpx / (float)MapView.Hpx);
-                return;
-            }
-            // the station list fills the middle (Buttons); this line is above it: what plays, the volume
-            string fr;
-            if (!radioOn) fr = "radio off";
-            else if (Radio == null) fr = "radio";
-            else fr = (Radio.amfm ? $"AM {Radio.FR:0}" : $"FM {Radio.FR:0.0}") + "  " + (StationName(Radio) ?? "no station")
-                + $"   vol {Mathf.RoundToInt((Radio.Bvolume != null ? Radio.Bvolume.tunedLerp : 0f) * 10f)}";
-            var playing = s?.Current;
-            if (flash != null) fr += "\n" + flash;
-            else if (playing != null && s.Playing) fr += "\nplaying: " + (playing.Title.Length > 40 ? playing.Title.Substring(0, 40) + "..." : playing.Title);
-            Show(Model != null ? Model.Screen * 0.15f : Color.black, null, fr, top: radioOn && Radio != null);
+            if (Touch != null) Present(s, powered, radioOn);
         }
 
-        /// The screen's buttons for this player's tab. YouTube presses are edits to the car's shared state (everyone in
-        /// the car sees and hears them); the radio's turn the game's own knobs (the game shares those).
-        private void Buttons(UnitState s, bool powered, bool radioOn)
+        // ---- the screen (Screens.cs draws it) ----
+
+        private readonly ScreenModel _m = new ScreenModel();
+        private readonly Dictionary<string, Action> _act = new Dictionary<string, Action>();
+        /// The model's name on the screen for a moment when the car gets power.
+        private bool _wasPowered; private float _wakeUntil;
+        /// The station list's first row when scrolled with the wheel; -1: around the station that plays.
+        private int _stationsTop = -1;
+        /// CLEAR pressed once: until then a second press clears the car's queue (it is everyone's).
+        private float _clearArmedUntil;
+        public static readonly float WakeS = 1.2f, ArmedS = 3f, PressedS = 0.15f;
+
+        public static readonly int ListRows = 4, ResultRows = 4, StationRows = 5;
+
+        /// This frame's screen: what it shows (ScreenModel), the action behind each button, and the picture or the
+        /// map. YouTube presses are edits to the car's shared state (everyone in the car sees and hears them); the
+        /// radio's turn the game's own knobs (the game shares those).
+        private void Present(UnitState s, bool powered, bool radioOn)
         {
-            if (Touch == null) return;
-            var top = new List<(string, string, Action, bool)>
+            var m = _m; m.Reset(); _act.Clear();
+            var ph = Model != null ? Model.Screen : Units.Models[0].Screen;
+            m.R = (byte)Mathf.RoundToInt(ph.r * 255f); m.G = (byte)Mathf.RoundToInt(ph.g * 255f); m.B = (byte)Mathf.RoundToInt(ph.b * 255f);
+            m.Brand = Model != null ? Model.Name : "Head Unit";
+            float now = Time.realtimeSinceStartup;
+            if (powered && !_wasPowered) _wakeUntil = now + WakeS;
+            _wasPowered = powered;
+            Texture content = null; float aspect = -1f; bool tint = false;
+            if (!powered) m.Screen = ScreenModel.View.Off;
+            else if (now < _wakeUntil) m.Screen = ScreenModel.View.Wake;
+            else if (_full)
             {
-                ("radio", "RADIO", () => SetTab(Mode.Radio), Tab == Mode.Radio),
-                ("video", "MEDIA", () => SetTab(Mode.Video), Tab == Mode.Video),
-                ("nav", "NAV", () => SetTab(Mode.Nav), Tab == Mode.Nav),
-            };
-            var bottom = new List<(string, string, Action, bool)>();
-            List<(string, string, Action, bool)> list = null;
-            int cols = 1;
-            string key = Tab.ToString();
-            if (!powered) { Touch.Layout("nopower", null, null); return; }
-            if (_full)
-            {
-                Touch.Layout("full", new List<(string, string, Action, bool)> { ("unfull", "", () => _full = false, false) }, null, null, full: true);
-                return;
-            }
-            if (_dialog == Dialog.Link)
-            {
-                bool update = LookupFailed;
-                key = "dialog-link" + (update ? "-update" : "");
-                bool typing = TypingInto == this;
-                string text = BarText(s);
-                bottom.Add(("paste", "PASTE", () => SetLink((GUIUtility.systemCopyBuffer ?? "").Trim()), false));
-                bottom.Add(("type", typing ? "TYPING" : "TYPE", () => { if (TypingInto == this) StopTyping(); else StartTyping(); }, typing));
-                bottom.Add(("del", "DEL", () => { string t = BarText(State); if (t.Length > 0) SetLink(t.Substring(0, t.Length - 1)); }, false));
-                bottom.Add(("add", IsLink(text) || text.Trim().Length == 0 ? "ADD" : "SEARCH", AddLink, false));
-                bottom.Add(("cancel", "CANCEL", CloseDialog, false));
-                // a link or search here failed in yt-dlp (an old one, mostly): updating it is offered here too (with
-                // nothing in the queue, MEDIA has no failing video to offer it)
-                if (update) bottom.Add(("update", "UPDATE", Ytdlp.Update, true));
-            }
-            else if (_dialog == Dialog.Results)
-            {
-                // the car's results, the page the car's screen is on; marked: in the car's queue already
-                key = "dialog-results";
-                list = new List<(string, string, Action, bool)>();
-                var results = s != null ? s.Results : new List<QueueItem>();
-                if (Touch.Looked == Touch && Touch.Wheel != 0) SetResultsTop(_resultsTop - Touch.Wheel, results.Count);
-                int first = Mathf.Clamp(_resultsTop, 0, Mathf.Max(0, results.Count - ResultRows));
-                string marks = "";
-                for (int i = first; i < results.Count && i < first + ResultRows; i++)
-                {
-                    var q = results[i];
-                    var e = new Ytdlp.Entry { Id = q.VideoId, Title = q.Title, Duration = q.Duration };
-                    bool added = s.Queue.Exists(it => it.VideoId == q.VideoId);
-                    marks += added ? "1" : "0";
-                    string title = e.Title.Length > ResultChars ? e.Title.Substring(0, ResultChars - 3).TrimEnd() + "..." : e.Title;
-                    list.Add(("r" + (i - first), title + (e.Duration > 0 ? "  " + Clock(e.Duration) : ""), () =>
-                    {
-                        if (Controls.Send(this, new List<Ytdlp.Entry> { e }) == 1) Panel.Flash("added: " + e.Title);
-                        else Panel.Flash("couldn't add: is the unit in a car's radio slot?");
-                    }, added));
-                }
-                key += list.Count + "@" + first + "+" + marks;
-                bottom.Add(("up", "UP", () => SetResultsTop(first - ResultRows, State?.Results.Count ?? 0), false));
-                bottom.Add(("down", "DOWN", () => SetResultsTop(first + ResultRows, State?.Results.Count ?? 0), false));
-                bottom.Add(("again", "SEARCH AGAIN", () => OpenBar(State?.Searched ?? ""), false));
-                bottom.Add(("done", "DONE", CloseDialog, false));
-            }
-            else if (_dialog == Dialog.Ytdlp)
-            {
-                key = "dialog-ytdlp";
-                bottom.Add(("download", "DOWNLOAD", () => { _tools = false; Ytdlp.Download(); }, false));
-                // without yt-dlp nothing plays; without ffmpeg only 360p: then on to the search bar
-                bottom.Add(("notnow", "NOT NOW", () =>
-                {
-                    if (Ytdlp.Present) Ytdlp.FfmpegDeclined = true;
-                    _tools = false;
-                    if (Ytdlp.Present && !_toolsOnly) OpenBar("");
-                }, false));
-            }
-            else if (Tab == Mode.Radio)
-            {
-                bottom.Add(("pwr", radioOn ? "OFF" : "ON", Power, radioOn));
-                bottom.Add(("vol-", "VOL -", () => Knob(Radio?.Bvolume, -0.1f), false));
-                bottom.Add(("vol+", "VOL +", () => Knob(Radio?.Bvolume, 0.1f), false));
-                bottom.Add(("seek-", "<<", () => Seek(-1), false));
-                bottom.Add(("seek+", ">>", () => Seek(1), false));
-                bottom.Add(("amfm", Radio != null && Radio.amfm ? "AM" : "FM", () => Radio?.BChangeAMFM?.Turn(), false));
-                if (radioOn && Radio != null)
-                {
-                    // every station of the band, always there: tap one to tune to it
-                    bool am = Radio.amfm;
-                    var on = Tuned(Radio);
-                    var band = Stations.Band(am);
-                    list = new List<(string, string, Action, bool)>();
-                    for (int i = 0; i < band.Count; i++)
-                    {
-                        var ch = band[i];
-                        list.Add(("st" + i, Stations.Freq(am, ch.FR) + "\n" + Stations.Name(am, ch, full: false), () => TuneTo(ch.FR), ch == on));
-                    }
-                    cols = list.Count > 6 ? 3 : 2;
-                    key += (am ? "am" : "fm") + list.Count;
-                }
-            }
-            else if (Tab == Mode.Video)
-            {
-                if (_listOpen && s != null)
-                {
-                    // the queue: tap one to play it
-                    list = new List<(string, string, Action, bool)>();
-                    int maxTop = Mathf.Max(0, s.Queue.Count - ListRows);
-                    if (Touch.Looked == Touch && Touch.Wheel != 0) ScrollList(-Touch.Wheel, s);
-                    int first = _listTop >= 0 ? Mathf.Min(_listTop, maxTop) : Mathf.Clamp(s.Index - 1, 0, maxTop);
-                    for (int i = first; i < s.Queue.Count && i < first + ListRows; i++)
-                    {
-                        int at = i;
-                        list.Add(("q" + (i - first), (i + 1) + ". " + s.Queue[i].Title, () => { Edit(w => { w.Byte((byte)Op.Jump); w.VarUInt((uint)at); }); }, i == s.Index));
-                    }
-                    key += "list" + list.Count + "@" + first;
-                    bottom.Add(("up", "UP", () => ScrollList(-ListRows, State), false));
-                    bottom.Add(("down", "DOWN", () => ScrollList(ListRows, State), false));
-                    bottom.Add(("clear", "CLEAR", () => { if (Edit(w => w.Byte((byte)Op.Clear))) { _listOpen = false; Panel.Flash("queue cleared"); } else Panel.Flash("couldn't clear the queue"); }, false));
-                    bottom.Add(("big", "BIG", () => Panel.Big = !Panel.Big, Panel.Big));
-                    bottom.Add(("back", "BACK", () => { _listOpen = false; _listTop = -1; }, false));
-                }
-                else
-                {
-                    bottom.Add(("prev", "|<", () => Edit(w => w.Byte((byte)Op.Prev)), false));
-                    bottom.Add(("play", s != null && s.Playing ? "PAUSE" : "PLAY", () => { var st = State; if (st != null) Edit(w => w.Byte((byte)(st.Playing ? Op.Pause : Op.Play))); }, false));
-                    bottom.Add(("next", ">|", () => Edit(w => w.Byte((byte)Op.Next)), false));
-                    bottom.Add(("vol-", "VOL -", () => VideoVolume(-0.1f), false));
-                    bottom.Add(("vol+", "VOL +", () => VideoVolume(0.1f), false));
-                    // without the programs, + ADD is where they are offered: named for it while the queue can't play here
-                    bool tools = NeedsTools(s);
-                    bottom.Add(("link", tools ? "GET TOOLS" : "+ ADD", () =>
-                    {
-                        _toolsOnly = tools;
-                        if (tools || !Ytdlp.Present || Ytdlp.OfferFfmpeg) _tools = true; else OpenBar("");
-                    }, tools));
-                    bottom.Add(("list", "LIST", () => { _listOpen = true; _listTop = -1; }, false));
-                    // FULL has nothing to show while yt-dlp fails: the same place updates it
-                    if (YtdlpFailed) bottom.Add(("update", "UPDATE", Ytdlp.Update, true));
-                    else bottom.Add(("full", "FULL", () => { if (_video != null && _video.Ready) _full = true; }, false));
-                }
+                // TV: the picture over the whole screen; a touch anywhere comes back
+                m.Screen = ScreenModel.View.Tv;
+                content = _video.Texture; aspect = _video.Aspect; tint = true;
+                _act["unfull"] = () => _full = false;
             }
             else
             {
-                bottom.Add(("zoom-", "ZOOM -", () => SetZoom(_zoom + 1), false));
-                bottom.Add(("zoom+", "ZOOM +", () => SetZoom(_zoom - 1), false));
+                m.Tab = (int)Tab;
+                m.Banner = Panel.Flashing;
+                _act["radio"] = () => SetTab(Mode.Radio);
+                _act["video"] = () => SetTab(Mode.Video);
+                _act["nav"] = () => SetTab(Mode.Nav);
+                if (_dialog == Dialog.Ytdlp || (Ytdlp.Downloading && Tab == Mode.Video && _dialog == Dialog.None)) ToolsScreen(m);
+                else if (_dialog == Dialog.Link || _dialog == Dialog.Results) SearchScreen(m, s);
+                else if (Tab == Mode.Radio) RadioScreen(m, radioOn);
+                else if (Tab == Mode.Video && _listOpen && s != null) QueueScreen(m, s);
+                else if (Tab == Mode.Video) MediaScreen(m, s, ref content, ref aspect, ref tint);
+                else NavScreen(m, ref content);
             }
-            if (Tab == Mode.Video && _dialog == Dialog.None && !_listOpen) key += (NeedsTools(s) ? "t" : "") + (YtdlpFailed ? "u" : "");
-            Touch.Layout(key, top, bottom, list, cols: cols, listTop: _dialog == Dialog.Results ? 0.2f : Tab == Mode.Radio ? 0.3f : 0f);
+            if (Touch.Looked == Touch && Touch.LookedButton != null) m.Aimed = Touch.LookedButton.Id;
+            if (now - Touch.PressedAt < PressedS) m.Pressed = Touch.PressedId;
+            Touch.Present(m, content, aspect, tint && !Plugin.ColourPicture.Value, _act);
         }
 
-        public static readonly int ListRows = 5;
-        /// Search results: fewer, taller rows than the queue (a title in two lines big enough to read from the seat).
-        public static readonly int ResultRows = 4, ResultChars = 52;
+        private void RadioScreen(ScreenModel m, bool radioOn)
+        {
+            m.Screen = ScreenModel.View.Radio;
+            _act["pwr"] = Power;
+            _act["amfm"] = () => { Radio?.BChangeAMFM?.Turn(); _stationsTop = -1; };
+            _act["seek-"] = () => { Seek(-1); _stationsTop = -1; };
+            _act["seek+"] = () => { Seek(1); _stationsTop = -1; };
+            _act["vol-"] = () => Knob(Radio?.Bvolume, -0.1f);
+            _act["vol+"] = () => Knob(Radio?.Bvolume, 0.1f);
+            if (Radio == null) return;
+            bool am = Radio.amfm;
+            var on = Tuned(Radio);
+            m.RadioOn = radioOn; m.Am = am;
+            m.Freq = Stations.Freq(am, Radio.FR);
+            m.Unit = am ? "KHZ" : "MHZ";
+            m.Station = on != null ? Stations.Name(am, on, full: false) : "NO STATION";
+            m.Volume = Mathf.RoundToInt((Radio.Bvolume != null ? Radio.Bvolume.tunedLerp : 0f) * 10f);
+
+            // every station of the band, five at a time around the one that plays: tap one to tune to it
+            var band = Stations.Band(am);
+            int maxTop = Mathf.Max(0, band.Count - StationRows);
+            int top = _stationsTop >= 0 ? Mathf.Min(_stationsTop, maxTop) : Mathf.Clamp(band.IndexOf(on) - 1, 0, maxTop);
+            if (Touch.Looked == Touch && Touch.Wheel != 0 && Touch.LookedButton != null && Touch.LookedButton.Id.StartsWith("st"))
+                top = _stationsTop = Mathf.Clamp(top - Touch.Wheel, 0, maxTop);
+            for (int i = top; i < band.Count && i < top + StationRows; i++)
+            {
+                var ch = band[i];
+                string id = "st" + i;
+                m.Stations.Add(new ScreenModel.Row { Id = id, Lead = Stations.Freq(am, ch.FR), Text = Stations.Name(am, ch, full: false), On = ch == on });
+                _act[id] = () => TuneTo(ch.FR);
+            }
+            m.StationsTop = top; m.StationsCount = band.Count;
+        }
+
+        private void MediaScreen(ScreenModel m, UnitState s, ref Texture content, ref float aspect, ref bool tint)
+        {
+            m.Screen = ScreenModel.View.Media;
+            var cur = s?.Current;
+            // without the programs, ADD is where they are offered: named for it while the queue can't play here
+            bool tools = NeedsTools(s);
+            m.QueueEmpty = cur == null;
+            m.NeedsTools = tools;
+            m.Title = cur?.Title ?? "";
+            m.Playing = s != null && s.Playing;
+            m.Track = s != null && s.Queue.Count > 0 ? (s.Index + 1).ToString("00") + "/" + s.Queue.Count.ToString("00") : "--/--";
+            m.Time = cur != null ? Clock(Mathf.Max(0f, s.Position(MpApi.SessionTime))) : "--:--";
+            m.VideoVolume = Mathf.RoundToInt(Plugin.VideoVolume.Value * 10f);
+            _act["vol-"] = () => VideoVolume(-0.1f);
+            _act["vol+"] = () => VideoVolume(0.1f);
+            _act["link"] = () =>
+            {
+                _toolsOnly = tools;
+                if (tools || !Ytdlp.Present || Ytdlp.OfferFfmpeg) _tools = true; else OpenBar("");
+            };
+            _act["prev"] = () => Edit(w => w.Byte((byte)Op.Prev));
+            _act["play"] = () => { var st = State; if (st != null) Edit(w => w.Byte((byte)(st.Playing ? Op.Pause : Op.Play))); };
+            _act["next"] = () => Edit(w => w.Byte((byte)Op.Next));
+            _act["list"] = () => { _listOpen = true; _listTop = -1; };
+
+            // the picture's window: the picture, or what it waits for
+            bool pic = _video != null && _video.Ready;
+            if (cur == null) m.Pane = ScreenModel.Window.Empty;
+            else if (_video == null || _video.Problem == "loading...")
+            {
+                float f = Ytdlp.VideoFrac(cur.VideoId), c = Ytdlp.ConvertFrac(cur.VideoId);
+                m.Pane = ScreenModel.Window.Loading;
+                m.Progress = f >= 0f ? f : c;
+                m.ProgressLabel = f < 0f && c >= 0f ? "CONVERTING" : "LOADING";
+            }
+            else if (tools) m.Pane = ScreenModel.Window.Tools;
+            // the video plays nowhere while yt-dlp fails: UPDATE where the picture would be
+            else if (YtdlpFailed) { m.Pane = ScreenModel.Window.Update; _act["update"] = Ytdlp.Update; }
+            else if (pic) { m.Pane = ScreenModel.Window.Picture; content = _video.Texture; aspect = _video.Aspect; tint = true; }
+            else if (_video.Problem != null) { m.Pane = ScreenModel.Window.Problem; m.Problem = _video.Problem; }
+            else m.Pane = ScreenModel.Window.Loading;
+            m.CanTv = pic && m.Pane == ScreenModel.Window.Picture;
+            if (m.CanTv) _act["full"] = () => { if (_video != null && _video.Ready) _full = true; };
+        }
+
+        private void QueueScreen(ScreenModel m, UnitState s)
+        {
+            m.Screen = ScreenModel.View.Queue;
+            // the queue: tap one to play it
+            if (Touch.Looked == Touch && Touch.Wheel != 0) ScrollList(-Touch.Wheel, s);
+            int maxTop = Mathf.Max(0, s.Queue.Count - ListRows);
+            int first = _listTop >= 0 ? Mathf.Min(_listTop, maxTop) : Mathf.Clamp(s.Index - 1, 0, maxTop);
+            for (int i = first; i < s.Queue.Count && i < first + ListRows; i++)
+            {
+                int at = i;
+                var q = s.Queue[i];
+                string id = "q" + (i - first);
+                m.Rows.Add(new ScreenModel.Row { Id = id, Lead = (i + 1).ToString("00"), Text = q.Title, Tail = q.Duration > 0f ? Clock(q.Duration) : "", On = i == s.Index });
+                _act[id] = () => Edit(w => { w.Byte((byte)Op.Jump); w.VarUInt((uint)at); });
+            }
+            m.RowsTop = first; m.RowsCount = s.Queue.Count; m.QueueCount = s.Queue.Count;
+            m.Big = Panel.Big;
+            m.ClearArmed = Time.realtimeSinceStartup < _clearArmedUntil;
+            _act["up"] = () => ScrollList(-ListRows, State);
+            _act["down"] = () => ScrollList(ListRows, State);
+            _act["back"] = () => { _listOpen = false; _listTop = -1; };
+            _act["big"] = () => Panel.Big = !Panel.Big;
+            _act["clear"] = () =>
+            {
+                if (Time.realtimeSinceStartup >= _clearArmedUntil) { _clearArmedUntil = Time.realtimeSinceStartup + ArmedS; return; }
+                _clearArmedUntil = 0f;
+                if (Edit(w => w.Byte((byte)Op.Clear))) { _listOpen = false; Panel.Flash("queue cleared"); } else Panel.Flash("couldn't clear the queue");
+            };
+        }
+
+        /// The + ADD screen: the bar (touch it to type) and, once searched, the results under it. The car's: everyone
+        /// sees what one player types and the results they page.
+        private void SearchScreen(ScreenModel m, UnitState s)
+        {
+            m.Screen = ScreenModel.View.Search;
+            bool results = _dialog == Dialog.Results;
+            bool typing = TypingInto == this;
+            string text = results ? s?.Searched ?? "" : BarText(s);
+            m.Bar = text; m.Typing = typing; m.Cursor = typing && Time.realtimeSinceStartup % 1f < 0.5f;
+            m.Searching = _searching || (s != null && s.Searching);
+            m.IsLink = IsLink(text) || text.Trim().Length == 0;
+            m.ResultsShown = results;
+            // a link or search here failed in yt-dlp (an old one, mostly): updating it is offered here too
+            m.Update = LookupFailed;
+            if (m.Update) _act["update"] = Ytdlp.Update;
+            _act["done"] = CloseDialog;
+            Action edit = () => { string w = State?.Searched ?? ""; OpenBar(w); _link = w; _linkSent = true; TypingInto = this; };
+            _act["type"] = () => { if (_dialog == Dialog.Results) edit(); else if (TypingInto == this) StopTyping(); else StartTyping(); };
+            _act["add"] = () => { if (_dialog == Dialog.Results) edit(); else AddLink(); };
+            _act["paste"] = () => { string p = (GUIUtility.systemCopyBuffer ?? "").Trim(); if (_dialog == Dialog.Results) OpenBar(p); else SetLink(p); };
+            _act["del"] = () => { string t = BarText(State); if (t.Length > 0) SetLink(t.Substring(0, t.Length - 1)); };
+            if (!results || s == null) return;
+
+            // the car's results, the page the car's screen is on; marked: in the car's queue already
+            var list = s.Results;
+            if (Touch.Looked == Touch && Touch.Wheel != 0) SetResultsTop(_resultsTop - Touch.Wheel, list.Count);
+            int first = Mathf.Clamp(_resultsTop, 0, Mathf.Max(0, list.Count - ResultRows));
+            for (int i = first; i < list.Count && i < first + ResultRows; i++)
+            {
+                var q = list[i];
+                var e = new Ytdlp.Entry { Id = q.VideoId, Title = q.Title, Duration = q.Duration };
+                bool added = s.Queue.Exists(it => it.VideoId == q.VideoId);
+                string id = "r" + (i - first);
+                m.Rows.Add(new ScreenModel.Row { Id = id, Lead = added ? null : "+", Text = q.Title, Tail = q.Duration > 0f ? Clock(q.Duration) : "", Mark = added, On = added });
+                _act[id] = () =>
+                {
+                    if (Controls.Send(this, new List<Ytdlp.Entry> { e }) == 1) Panel.Flash("added: " + e.Title);
+                    else Panel.Flash("couldn't add: is the unit in a car's radio slot?");
+                };
+            }
+            m.RowsTop = first; m.RowsCount = list.Count;
+            _act["up"] = () => SetResultsTop(first - ResultRows, State?.Results.Count ?? 0);
+            _act["down"] = () => SetResultsTop(first + ResultRows, State?.Results.Count ?? 0);
+        }
+
+        /// The offer to download the programs (what comes from where and how big, nothing more: a player agrees to it
+        /// here), and their download.
+        private void ToolsScreen(ScreenModel m)
+        {
+            m.Screen = ScreenModel.View.Tools;
+            if (Ytdlp.Downloading) { m.ToolsDownloading = true; m.ToolsStatus = Ytdlp.Status; m.Progress = Ytdlp.DownloadFrac; return; }
+            if (Ytdlp.Present) { m.ToolsWhat = Plugin.Convert.Value ? "GET FFMPEG" : $"GET FFMPEG FOR {Plugin.MaxHeight.Value}P"; m.ToolsWhere = "GITHUB  80 MB"; }
+            else { m.ToolsWhat = "GET YT-DLP, DENO, FFMPEG"; m.ToolsWhere = "GITHUB  140 MB"; }
+            _act["download"] = () => { _tools = false; Ytdlp.Download(); };
+            // without yt-dlp nothing plays; without ffmpeg only 360p: then on to the search bar
+            _act["notnow"] = () =>
+            {
+                if (Ytdlp.Present) Ytdlp.FfmpegDeclined = true;
+                _tools = false;
+                if (Ytdlp.Present && !_toolsOnly) OpenBar("");
+            };
+        }
+
+        /// The map: roads around the car, the road ahead brightest, heading up (redrawn every frame). Only the map: the
+        /// bend and slope text over it was spam (playtest 2026-11-24).
+        private void NavScreen(ScreenModel m, ref Texture content)
+        {
+            m.Screen = ScreenModel.View.Nav;
+            if (_map == null) _map = new MapView(Model != null ? Model.Screen : Units.Models[0].Screen);
+            _map.SetZoom(_zoom);
+            if (Car != null) _map.Draw(Car.transform, IsMyCar() ? Nav.Path : null);
+            content = _map.Texture;
+            m.Scale = MapView.ZoomText(_zoom).ToUpperInvariant();
+            m.ZoomInMax = _zoom <= 0; m.ZoomOutMax = _zoom >= UnitState.MaxZoom;
+            if (Car != null)
+            {
+                // where north (the world's +z) points on a map that turns with the car, in 10° steps
+                var f = Car.transform.forward;
+                int heading = Mathf.RoundToInt(Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg / 10f) * 10;
+                m.North = ((-heading % 360) + 360) % 360;
+            }
+            _act["zoom-"] = () => SetZoom(_zoom + 1);
+            _act["zoom+"] = () => SetZoom(_zoom - 1);
+        }
 
         /// The queue list moved by `rows` (from where it shows now).
         private void ScrollList(int rows, UnitState s)
@@ -380,10 +419,10 @@ namespace HeadUnit
             Edit(w => { w.Byte((byte)Op.AddText); w.String(t); });
         }
 
-        /// TYPE: this player's keys go into the bar, starting from what it holds now.
+        /// The bar touched: this player's keys go into it, starting from what it holds now.
         private void StartTyping() { _link = State?.AddText ?? ""; _linkSent = true; TypingInto = this; }
 
-        /// Typing stopped (TYPE again, Escape, Enter): the text as it is now sent to everyone.
+        /// Typing stopped (the bar touched again, Escape, Enter): the text as it is now sent to everyone.
         private void StopTyping() { if (TypingInto == this) TypingInto = null; SendLink(true); }
 
         /// The page of results: here at once, and for everyone in the car.
@@ -429,28 +468,11 @@ namespace HeadUnit
         private bool YtdlpFailed => !Ytdlp.Downloading && Ytdlp.Present && _video != null && _video.Problem != null && _video.Problem.StartsWith("yt-dlp:");
 
         /// This player's video volume, by `d`: each player hears the car's video as loud as they set it (the config's
-        /// Video.Volume, kept on this machine), so nobody turns it up or down for the others.
+        /// Video.Volume, kept on this machine), so nobody turns it up or down for the others. MEDIA's meter shows it.
         private void VideoVolume(float d)
         {
             float v = Mathf.Round(Mathf.Clamp01(Plugin.VideoVolume.Value + d) * 10f) / 10f;
             Plugin.VideoVolume.Value = v;
-            Panel.Flash($"video volume {Mathf.RoundToInt(v * 10f)}");
-        }
-
-        private string DialogText()
-        {
-            // the download offers say what comes from where and how big, nothing more (a player agrees to it here)
-            if (_dialog == Dialog.Ytdlp && Ytdlp.Present && Plugin.Convert.Value) return "Download ffmpeg from GitHub (80 MB)?";
-            if (_dialog == Dialog.Ytdlp && Ytdlp.Present) return $"Download ffmpeg from GitHub (80 MB) for {Plugin.MaxHeight.Value}p?";
-            if (_dialog == Dialog.Ytdlp) return "Download yt-dlp, Deno and ffmpeg from GitHub (140 MB)?";
-            // a search bar: what is typed (a link or words), nothing explaining the buttons (playtest 2026-11-24); the
-            // car's, so everyone sees what one player types and that a search runs
-            var s = State;
-            string text = BarText(s);
-            string shown = text.Length > 48 ? "..." + text.Substring(text.Length - 45) : text;
-            string bar = shown.Length == 0 && TypingInto != this ? "search" : shown + (TypingInto == this ? "_" : "");
-            string status = _searching || (s != null && s.Searching) ? "searching..." : Panel.Flashing;
-            return bar + (status != null ? "\n" + status : "");
         }
 
         /// The dialog closed: the download offer here, the + ADD screen for everyone in the car.
@@ -708,21 +730,6 @@ namespace HeadUnit
 
         private void Ended(int index, float length) => Edit(w => { w.Byte((byte)Op.Ended); w.VarUInt((uint)index); w.Float(length); });
 
-        private string _lastText;
-        private void Show(Color tint, Texture tex, string text, bool top = false, float aspect = -1f)
-        {
-            if (Touch == null) return;
-            Touch.TextTop(top);
-            Touch.Picture(tex != null ? aspect : -1f, _full);
-            var m = Touch.ContentMat;
-            if (m != null)
-            {
-                var want = tex != null ? tex : Look.Pixel(new Color(tint.r, tint.g, tint.b, 1f));   // Unlit/Texture has no tint
-                if (m.mainTexture != want) m.mainTexture = want;
-            }
-            if (Touch.Text != null && text != _lastText) { Touch.Text.text = Touch.Readable(Touch.Text.font, text); _lastText = text; }
-        }
-
         public string VideoDescribe => _video != null ? _video.Describe() : "no video";
 
         /// The videos that play or come next on the units near this player (the cache never deletes these). A kept
@@ -745,7 +752,7 @@ namespace HeadUnit
         public bool VideoReady => _video != null && _video.Ready;
         public string VideoProblem => _video?.Problem;
         public AudioSource VideoAudio => _video?.Audio;
-        public Texture2D MapTexture => _map?.Texture;
+        public MapView Map => _map;
         public bool VideoPlaying => _video != null && _video.Player != null && _video.Player.isPlaying;
         public Texture VideoTexture => _video != null && _video.Ready ? _video.Texture : null;
     }

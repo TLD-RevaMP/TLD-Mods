@@ -14,14 +14,14 @@ namespace HeadUnit
     ///    streamed between players: each machine plays the video itself, from a shared position on the session clock
     ///    (Video.cs, State.cs).
     ///  - Navigation: a framework that reads the road ahead (Nav.cs); the first provider shows bends and descents.
-    ///  - A touch screen like a car's head unit (Touch.cs): look at a button and click, as with the game's knobs. The
-    ///    radio's knobs are on it too. A text field opens only to type a link.
+    ///  - A touch screen drawn as an old monochrome CRT (Touch.cs, Screens.cs, Crt.cs): look at a box and click, as
+    ///    with the game's knobs. The radio's knobs are on it too. Typing goes into its search bar.
     [BepInPlugin(Guid, "Head Unit", Version)]
     [BepInDependency("tldrevamp.core", BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "tldrevamp.headunit";
-        public const string Version = "0.3.2";
+        public const string Version = "0.4.0";
 
         internal static ManualLogSource Log;
         internal static ModInfo Mod;
@@ -32,12 +32,14 @@ namespace HeadUnit
         internal static ConfigEntry<float> VideoVolume;
         internal static ConfigEntry<int> MaxHeight;
         internal static ConfigEntry<bool> Convert;
+        internal static ConfigEntry<bool> ColourPicture;
 
         private void Awake()
         {
             Log = Logger;
             VideoVolume = Config.Bind("Video", "Volume", 0.5f, new ConfigDescription("Video loudness on this machine (the head unit's VOL buttons): each player sets their own", new AcceptableValueRange<float>(0f, 1f)));
             MaxHeight = Config.Bind("Video", "Resolution", 720, new ConfigDescription("Highest video resolution to download (lines: 360, 480, 720 or 1080). Above 360 needs ffmpeg, offered with yt-dlp", new AcceptableValueRange<int>(144, 1080)));
+            ColourPicture = Config.Bind("Screen", "ColourPicture", false, "Show the video in its own colours instead of in the screen's phosphor (this machine only)");
             Convert = Config.Bind("Video", "ConvertToVP8", false, "Convert each video to VP8 after downloading it: for Steam's own Proton, which has no H.264 decoder (turned on by itself the first time a video doesn't decode here; needs ffmpeg)");
             Mod = MpApi.RegisterMod("headunit", "Head Unit", Version);
             StateType = MpApi.RegisterType(Mod, new UnitStateType());

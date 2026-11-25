@@ -3,8 +3,10 @@
 A digital head unit for a car's radio slot, and the main example of TLD RevaMP's multiplayer mod API.
 
 In the game: rare loot in a few models, each fitting only some cars. The game's radio keeps working inside it. Its
-touch screen (look at a button and click, as with the game's knobs) has three tabs: the radio, YouTube with a queue,
-and navigation (a map of the roads around the car and the road ahead). A unit can also be glued
+touch screen (look at a box and click, as with the game's knobs) is drawn as an old monochrome CRT: one phosphor colour
+per model (the DH-1 ice blue, the DH-2 Wide green, the RX Pro amber), one blocky font, a box around everything that can
+be touched, inverse for what is on, a dither under the crosshair. It has three tabs down the driver's side: the radio,
+YouTube with a queue, and navigation (a map of the roads around the car and the road ahead). A unit can also be glued
 anywhere in the car, like any item. In a session, everyone in or near the car sees the same video at the same moment,
 and the same screen: whoever switches to RADIO, MEDIA or NAV, zooms the map, or opens + ADD, types in its bar,
 searches or pages the results does it for everyone (the radio itself is shared by the game). What a player is in the
@@ -37,8 +39,10 @@ middle of stays their own: the queue list, FULL, BIG.
 | `Units.cs` | The head unit models as game items, and which cars each fits |
 | `UnitBehaviour.cs` | On every unit: finds its car and that car's shared state, and shows it |
 | `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom, the + ADD screen; a hints flag it no longer uses) |
-| `Touch.cs`, `Controls.cs`, `Panel.cs` | The touch screen, crosshair clicks, typing a link, the passengers' big picture |
-| `Look.cs` | The unit's body colour, screen and text |
+| `Crt.cs` | The CRT canvas: boxes, the 5 × 7 font, pixel icons, and the phosphor's glow, scanlines and vignette (no Unity) |
+| `Screens.cs` | Each screen's layout and drawing from a plain model of what it shows, and its touch areas (no Unity) |
+| `Touch.cs`, `Controls.cs`, `Panel.cs` | The canvas on the screen with the picture or map in its window, crosshair clicks, the passengers' big picture |
+| `Look.cs` | The unit's body colour and screen |
 | `Video.cs` | Plays the video on this machine and keeps it at the shared position |
 | `Ytdlp.cs` | Fetches yt-dlp (and optionally ffmpeg and Deno) and downloads each video to a temporary file that is deleted once nothing plays it |
 | `Spotify.cs` | Turns a Spotify playlist, album or song link into YouTube Music searches (nothing plays from Spotify) |
@@ -50,7 +54,8 @@ middle of stays their own: the queue list, FULL, BIG.
 ## Settings
 
 `BepInEx/config/tldrevamp.headunit.cfg`, section `[Video]`: `Volume` (this machine only), `Resolution` (above 360
-needs ffmpeg), `ConvertToVP8` (for Steam's own Proton, which can't decode H.264; turns itself on when needed).
+needs ffmpeg), `ConvertToVP8` (for Steam's own Proton, which can't decode H.264; turns itself on when needed); section
+`[Screen]`: `ColourPicture` (the video in its own colours rather than in the screen's phosphor; this machine only).
 
 Videos are streamed through a temporary file in `BepInEx/cache/HeadUnit`, because the game's video player can't
 open YouTube's address under Proton. That file is not a library: it is deleted as soon as no unit nearby plays it or

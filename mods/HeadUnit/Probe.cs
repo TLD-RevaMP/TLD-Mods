@@ -248,11 +248,13 @@ namespace HeadUnit
         /// the main road's, the other roads'.
         public static string MapPng(string name)
         {
-            var t = Nearest(true)?.MapTexture;
+            var map = Nearest(true)?.Map;
+            var t = map?.Texture;
             if (t == null) return "no map (NAV not opened)";
             var px = t.GetPixels32();
             int main = 0, road = 0;
-            foreach (var c in px) { if (c.r == 240 && c.g == 222 && c.b == 120) main++; else if (c.r == 150 && c.g == 155 && c.b == 165) road++; }
+            Color32 mc = map.MainColor, rc = map.RoadColor;
+            foreach (var c in px) { if (c.r == mc.r && c.g == mc.g && c.b == mc.b) main++; else if (c.r == rc.r && c.g == rc.g && c.b == rc.b) road++; }
             string path = System.IO.Path.Combine(Application.dataPath, $"headunit_map_{name}.png");
             System.IO.File.WriteAllBytes(path, ImageConversion.EncodeToPNG(t));
             return $"main road {main} px, other roads {road} px: {path}";
@@ -262,8 +264,8 @@ namespace HeadUnit
         public static string SearchResults() => Nearest(true)?.TestResults() ?? "no mounted unit";
         public static string ScreenText()
         {
-            var t = Nearest(true)?.Touch?.Text;
-            return t == null ? "no text" : $"'{t.text}' enabled {t.enabled} active {t.gameObject.activeInHierarchy} at {t.transform.localPosition} size {t.rectTransform.sizeDelta} font {t.fontSize:F3} color {t.color}";
+            var t = Nearest(true)?.Touch;
+            return t == null ? "no screen" : "'" + t.ScreenText + "'; picture shader " + Touch.PictureShader;
         }
         public static string Missing(string s) => Nearest(true)?.Touch?.Missing(s.Replace('_', ' ')) ?? "no mounted unit";
         public static string SetConvert(bool on) { Plugin.Convert.Value = on; return "convert " + on; }

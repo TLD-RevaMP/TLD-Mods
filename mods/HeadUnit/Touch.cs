@@ -1,13 +1,12 @@
 using System;
 using System.Collections.Generic;
-using TMPro;
 using UnityEngine;
 
 namespace HeadUnit
 {
-    /// The head unit's touch screen: tabs along the top (radio, YouTube, navigation), the picture or text in the
-    /// middle, the buttons for the open tab along the bottom. A button is pressed as the game's own knobs are: look at
-    /// it (the crosshair) and click. Built on each unit when it starts; everything is in metres on the screen's face.
+    /// The head unit's touch screen, drawn as an old CRT: the whole face is one canvas (Crt, Screens) drawn again when
+    /// what it shows changes, with the picture or the map in its window on a quad just in front. A button is pressed as
+    /// the game's own knobs are: look at it (the crosshair) and click. Everything is in metres on the screen's face.
     ///
     /// The buttons have no colliders: a press is found by where the look ray meets the screen's face. Everything is
     /// drawn on the screen's own layer (playtest 2026-10-14: on the Ignore Raycast layer nothing but the picture
@@ -15,31 +14,28 @@ namespace HeadUnit
     public sealed class Touch : MonoBehaviour
     {
         public static float Reach = 1.6f;      // as far as the game lets a player use a knob
-        public const float Bar = 0.2f;         // the top and bottom bars, as a share of the screen's height
 
         public sealed class Button
         {
             public string Id;
-            public GameObject Go;
             public Rect Area;                  // on the screen's face, metres from its centre
-            public MeshRenderer Back;
-            public TextMeshPro Label;
             public Action Press;
-            public bool Lit;
         }
 
         public UnitBehaviour Unit;
         public float W, H;
         public Transform Root;
-        public MeshRenderer Content;           // the picture (video) between the bars
+        public MeshRenderer Content;           // the picture or the map, in the window the layout gives it
         public Material ContentMat;
-        public TextMeshPro Text;               // over the picture
-        private MeshRenderer _progress;        // a bar along the bottom of the picture (downloads)
-        private float _aspect = -1f; private bool _full;
+        private MeshRenderer _canvas, _scan;
+        private Material _canvasMat, _scanMat;
+        private Texture2D _canvasTex, _scanTex;
+        private readonly Crt _crt = new Crt();
+        private readonly Screens.Layout _layout = new Screens.Layout();
+        private byte[] _rgba;
+        private string _key;
+        private Screens.Area _window;
         private readonly List<Button> _buttons = new List<Button>();
-        private Material _back, _backLit, _backOn;
-        private Color _accent;
-        private string _layout;
 
         private static readonly List<Touch> All = new List<Touch>();
         private int _layer;
@@ -49,12 +45,20 @@ namespace HeadUnit
         /// The mouse wheel this frame while the crosshair is on a unit's buttons (+1 up, -1 down; 0: none).
         public static int Wheel;
         public static Button LookedButton;
+        /// The button clicked last on this screen, and when: drawn inverse for a moment.
+        public string PressedId;
+        public float PressedAt = -10f;
+
+        /// The game's sprite shader, which tints a texture with a colour (the picture in the screen's phosphor) and
+        /// lets the scanlines over it through; null where the build lacks it (the picture then stays in colour).
+        private static Shader _tinting;
+        private static bool _looked;
+        public static string PictureShader => _tinting != null ? _tinting.name : "none";
 
         public void Build(UnitBehaviour unit, Transform screen)
         {
             Unit = unit;
             W = screen.localScale.x; H = screen.localScale.y;
-            _accent = unit.Model != null ? unit.Model.Screen : new Color(0.3f, 0.7f, 1f);
             _layer = screen.gameObject.layer;
             _pick = unit.GetComponent<pickupable>();
             Root = new GameObject("HeadUnitTouch").transform;
@@ -63,213 +67,125 @@ namespace HeadUnit
             Root.localPosition = screen.localPosition; Root.localRotation = screen.localRotation;
             var ps = screen.parent.lossyScale;
             Root.localScale = new Vector3(1f / Mathf.Max(ps.x, 1e-4f), 1f / Mathf.Max(ps.y, 1e-4f), 1f / Mathf.Max(ps.z, 1e-4f));
+            if (!_looked) { _looked = true; _tinting = Shader.Find("Sprites/Default"); Plugin.Log.LogInfo("head unit picture shader: " + PictureShader); }
 
-            _back = Look.Solid(new Color(0.12f, 0.12f, 0.14f));
-            _backLit = Look.Solid(new Color(0.3f, 0.3f, 0.34f));
-            var on = _accent * 0.55f; on.a = 1f;
-            _backOn = Look.Solid(on);
+            // the canvas: mipmapped, so the scanlines even out from the seat instead of shimmering
+            _canvasTex = new Texture2D(Crt.W, Crt.H, TextureFormat.RGBA32, true)
+                { name = "HeadUnitCrt", filterMode = FilterMode.Trilinear, anisoLevel = 4, wrapMode = TextureWrapMode.Clamp };
+            _canvasMat = Look.ScreenMaterial(unit.Radio);
+            _canvasMat.mainTexture = _canvasTex;
+            _canvas = Quad("Canvas", -0.001f, _canvasMat);
+            _canvas.transform.localScale = new Vector3(W, H, 1f);
+            _rgba = new byte[Crt.W * Crt.H * 4];
 
-            var content = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            content.name = "Content";
-            content.layer = _layer;
-            DestroyImmediate(content.GetComponent<Collider>());
-            content.transform.SetParent(Root, false);
-            content.transform.localPosition = new Vector3(0f, 0f, -0.001f);
-            content.transform.localScale = new Vector3(W, H * (1f - 2f * Bar), 1f);
-            Content = content.GetComponent<MeshRenderer>();
-            ContentMat = Look.ScreenMaterial(unit.Radio);
+            ContentMat = _tinting != null ? new Material(_tinting) : Look.ScreenMaterial(unit.Radio);
             ContentMat.mainTexture = Look.Pixel(Color.black);
-            Content.sharedMaterial = ContentMat;
+            Content = Quad("Content", -0.002f, ContentMat);
+            White(Content);
+            Content.enabled = false;
 
-            Text = Label(Root, "Text", new Vector3(0f, 0f, -0.002f), new Vector2(W * 0.94f, H * (1f - 2f * Bar) * 0.9f), 0.05f);
-            Text.color = _accent;
-
-            var bar = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            bar.name = "Progress";
-            bar.layer = _layer;
-            DestroyImmediate(bar.GetComponent<Collider>());
-            bar.transform.SetParent(Root, false);
-            _progress = bar.GetComponent<MeshRenderer>();
-            _progress.sharedMaterial = _backOn;
-            _progress.enabled = false;
+            if (_tinting != null)
+            {
+                // every third line of the picture darker, as the canvas's
+                _scanTex = new Texture2D(1, 3, TextureFormat.RGBA32, true) { name = "HeadUnitScan", filterMode = FilterMode.Trilinear, wrapMode = TextureWrapMode.Repeat };
+                _scanTex.SetPixels32(new[] { new Color32(0, 0, 0, 90), new Color32(0, 0, 0, 0), new Color32(0, 0, 0, 0) });
+                _scanTex.Apply(true);
+                _scanMat = new Material(_tinting) { mainTexture = _scanTex };
+                _scan = Quad("Scanlines", -0.0025f, _scanMat);
+                White(_scan);
+                _scan.enabled = false;
+            }
         }
 
-        /// The picture's shape (width over height, or -1: fill the middle) and whether it takes the whole screen (FULL:
-        /// no bars). The picture keeps its shape, with black around it.
-        public void Picture(float aspect, bool full)
+        private MeshRenderer Quad(string name, float z, Material m)
         {
-            if (Mathf.Abs(aspect - _aspect) < 1e-3f && full == _full) return;
-            _aspect = aspect; _full = full;
-            float aw = W, ah = full ? H : H * (1f - 2f * Bar);
-            float w = aw, h = ah;
-            if (aspect > 0f) { if (aw / ah > aspect) w = ah * aspect; else h = aw / aspect; }
+            var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            go.name = name;
+            go.layer = _layer;
+            DestroyImmediate(go.GetComponent<Collider>());
+            go.transform.SetParent(Root, false);
+            go.transform.localPosition = new Vector3(0f, 0f, z);
+            var r = go.GetComponent<MeshRenderer>();
+            r.sharedMaterial = m;
+            return r;
+        }
+
+        /// The sprite shader multiplies by the mesh's colours, which the game's quad lacks.
+        private static void White(MeshRenderer r)
+        {
+            var mesh = r.GetComponent<MeshFilter>().mesh;
+            var c = new Color[mesh.vertexCount];
+            for (int i = 0; i < c.Length; i++) c[i] = Color.white;
+            mesh.colors = c;
+        }
+
+        /// Shows `m`: the canvas drawn again if it changed, the buttons' actions, and `content` (the picture, the map;
+        /// null: none) in its window, `aspect` kept (-1: fill it), tinted to the phosphor when `tint`.
+        public void Present(ScreenModel m, Texture content, float aspect, bool tint, Dictionary<string, Action> actions)
+        {
+            string key = m.Key();
+            if (key != _key)
+            {
+                _key = key;
+                Screens.Draw(m, _crt, _layout);
+                _crt.Compose(m.R, m.G, m.B, _rgba, flipY: true);
+                _canvasTex.SetPixelData(_rgba, 0);
+                _canvasTex.Apply(true);
+                _window = _layout.Content;
+                _buttons.Clear();
+                foreach (var a in _layout.Buttons) _buttons.Add(new Button { Id = a.Id, Area = Metres(a) });
+            }
+            foreach (var b in _buttons) b.Press = actions.TryGetValue(b.Id, out var act) ? act : null;
+
+            bool show = content != null && _window.W > 0;
+            if (Content.enabled != show) Content.enabled = show;
+            bool scan = show && tint && _scan != null;
+            if (_scan != null && _scan.enabled != scan) _scan.enabled = scan;
+            if (!show) return;
+            var area = Metres(_window);
+            float w = area.width, h = area.height;
+            if (aspect > 0f) { if (w / h > aspect) w = h * aspect; else h = w / aspect; }
+            var centre = new Vector3(area.center.x, area.center.y, 0f);
+            Content.transform.localPosition = centre + new Vector3(0f, 0f, -0.002f);
             Content.transform.localScale = new Vector3(w, h, 1f);
+            if (ContentMat.mainTexture != content) ContentMat.mainTexture = content;
+            var want = tint && _tinting != null ? new Color(m.R / 255f, m.G / 255f, m.B / 255f, 1f) : Color.white;
+            if (ContentMat.color != want) ContentMat.color = want;
+            if (scan)
+            {
+                _scan.transform.localPosition = centre + new Vector3(0f, 0f, -0.0025f);
+                _scan.transform.localScale = new Vector3(w, h, 1f);
+                _scanMat.mainTextureScale = new Vector2(1f, Mathf.Max(1f, h / H * Crt.H / 3f));
+            }
         }
 
-        /// A download's progress (0–1) as a bar along the bottom of the middle; below 0: none.
-        public void Progress(float f)
+        /// An area of the 800 × 440 grid on the screen's face, in metres from its centre (y up).
+        private Rect Metres(Screens.Area a)
         {
-            if (_progress == null) return;
-            bool on = f >= 0f;
-            if (_progress.enabled != on) _progress.enabled = on;
-            if (!on) return;
-            f = Mathf.Clamp01(f);
-            float mh = H * (1f - 2f * Bar), bh = mh * 0.06f, w = Mathf.Max(W * 0.9f * f, 0.0005f);
-            _progress.transform.localPosition = new Vector3(-W * 0.45f + w * 0.5f, -mh * 0.5f + bh * 1.5f, -0.0025f);
-            _progress.transform.localScale = new Vector3(w, bh, 1f);
+            float x = (a.X / (float)Crt.W - 0.5f) * W, top = (0.5f - a.Y / (float)Crt.H) * H, h = a.H / (float)Crt.H * H;
+            return new Rect(x, top - h, a.W / (float)Crt.W * W, h);
         }
-
-        /// The text over the picture: in the middle and large, or along the top and small (over the map).
-        public void TextTop(bool top)
-        {
-            if (Text == null || _top == top) return;
-            _top = top;
-            float mh = H * (1f - 2f * Bar);
-            Text.rectTransform.sizeDelta = new Vector2(W * 0.94f, top ? mh * 0.3f : mh * 0.9f);
-            Text.transform.localPosition = new Vector3(0f, top ? mh * 0.33f : 0f, -0.002f);
-            Text.alignment = top ? TextAlignmentOptions.Top : TextAlignmentOptions.Center;
-            Text.fontSizeMax = (top ? 0.025f : 0.05f) * 10f;
-            Text.fontSizeMin = top ? 0.03f : 0.1f;   // the strip is small: a line at the full screen's smallest size didn't show
-        }
-        private bool _top;
 
         private void OnEnable() => All.Add(this);
         private void OnDisable() => All.Remove(this);
 
         private void OnDestroy()
         {
-            if (ContentMat != null) Destroy(ContentMat);
-            foreach (var m in new[] { _back, _backLit, _backOn }) if (m != null) Destroy(m);
+            foreach (var m in new[] { ContentMat, _canvasMat, _scanMat }) if (m != null) Destroy(m);
+            if (_canvasTex != null) Destroy(_canvasTex);
+            if (_scanTex != null) Destroy(_scanTex);
+            // the coloured copies White made of the game's quad
+            foreach (var r in new[] { Content, _scan }) if (r != null) { var f = r.GetComponent<MeshFilter>(); if (f != null && f.sharedMesh != null) Destroy(f.sharedMesh); }
         }
 
-        /// The buttons for what the screen shows now (rebuilt only when the layout changes).
-        /// full: no rows; the whole screen is one button (`top`'s first: FULL's way back).
-        public void Layout(string key, IList<(string id, string text, Action press, bool on)> top, IList<(string id, string text, Action press, bool on)> bottom,
-                           IList<(string id, string text, Action press, bool on)> list = null, bool full = false, int cols = 1, float listTop = 0f)
-        {
-            if (key == _layout) { Relabel(top); Relabel(bottom); Relabel(list); return; }
-            _layout = key;
-            foreach (var b in _buttons) if (b.Go != null) Destroy(b.Go);
-            _buttons.Clear();
-            if (full)
-            {
-                var it = top[0];
-                var go = new GameObject("Button_" + it.id) { layer = _layer };
-                go.transform.SetParent(Root, false);
-                _buttons.Add(new Button { Id = it.id, Go = go, Area = new Rect(-W * 0.5f, -H * 0.5f, W, H), Press = it.press });
-                Content.enabled = true;
-                return;
-            }
-            Row(top, H * (0.5f - Bar * 0.5f));
-            Row(bottom, -H * (0.5f - Bar * 0.5f));
-            if (list != null)
-            {
-                // a list in the middle, top to bottom, in `cols` columns, under a strip of `listTop` (a share of the
-                // middle) left for the text
-                float mid = H * (1f - 2f * Bar), area = mid * (1f - listTop);
-                cols = Mathf.Max(1, cols);
-                int rows = Mathf.Max((list.Count + cols - 1) / cols, cols == 1 ? 4 : 1);
-                float rh = area / rows;
-                for (int r = 0; r * cols < list.Count; r++)
-                {
-                    var row = new List<(string, string, Action, bool)>();
-                    for (int c = 0; c < cols && r * cols + c < list.Count; c++) row.Add(list[r * cols + c]);
-                    while (row.Count < cols && rows > 1 && cols > 1) row.Add((null, null, null, false));
-                    Row(row, mid * 0.5f - mid * listTop - rh * (r + 0.5f), rh);
-                }
-            }
-            Content.enabled = list == null;
-        }
+        /// What the screen says now (tests).
+        public string ScreenText => string.Join(" | ", _crt.Texts);
 
-        private void Row(IList<(string id, string text, Action press, bool on)> items, float y, float height = -1f)
-        {
-            if (items == null || items.Count == 0) return;
-            float gap = W * 0.01f, bw = (W - gap * (items.Count + 1)) / items.Count, bh = (height > 0f ? height : H * Bar) - gap;
-            for (int i = 0; i < items.Count; i++)
-            {
-                var it = items[i];
-                if (it.id == null) continue;   // a gap (the last row of a grid)
-                float x = -W * 0.5f + gap + bw * 0.5f + i * (bw + gap);
-                var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
-                go.name = "Button_" + it.id;
-                DestroyImmediate(go.GetComponent<Collider>());
-                go.layer = _layer;
-                go.transform.SetParent(Root, false);
-                go.transform.localPosition = new Vector3(x, y, -0.001f);
-                go.transform.localScale = new Vector3(bw, bh, 1f);
-                var b = new Button { Id = it.id, Go = go, Area = new Rect(x - bw * 0.5f, y - bh * 0.5f, bw, bh), Back = go.GetComponent<MeshRenderer>(), Press = it.press };
-                b.Label = Label(Root, "Label_" + it.id, new Vector3(x, y, -0.002f), new Vector2(bw * 0.9f, bh * 0.8f), bh * 0.55f);
-                b.Label.transform.SetParent(go.transform, true);
-                b.Label.text = Readable(b.Label.font, it.text);
-                b.Lit = it.on;
-                b.Back.sharedMaterial = it.on ? _backOn : _back;
-                _buttons.Add(b);
-            }
-        }
-
-        private void Relabel(IList<(string id, string text, Action press, bool on)> items)
-        {
-            if (items == null) return;
-            foreach (var it in items)
-                foreach (var b in _buttons)
-                    if (b.Id == it.id)
-                    {
-                        if (b.Label != null) { var t = Readable(b.Label.font, it.text); if (b.Label.text != t) b.Label.text = t; }
-                        b.Press = it.press; b.Lit = it.on;
-                    }
-        }
-
-        /// The text with only characters the font has (a missing one shrank a whole label to nothing: a search result
-        /// with "|", headunit.py 2026-10-16): an accented letter becomes its plain one, anything else a space.
-        public static string Readable(TMP_FontAsset f, string s)
-        {
-            if (f == null || string.IsNullOrEmpty(s)) return s;
-            System.Text.StringBuilder sb = null;
-            for (int i = 0; i < s.Length; i++)
-            {
-                char c = s[i];
-                if (c == '\n' || f.HasCharacter(c, true)) { sb?.Append(c); continue; }
-                if (sb == null) sb = new System.Text.StringBuilder(s.Substring(0, i));
-                string d = c.ToString().Normalize(System.Text.NormalizationForm.FormD);
-                char plain = c == '\u0131' ? 'i' : d.Length > 0 ? d[0] : ' ';
-                sb.Append(plain != c && f.HasCharacter(plain, true) ? plain : ' ');
-            }
-            return sb != null ? sb.ToString() : s;
-        }
-
-        /// The characters of `s` the screen's font lacks (tests).
+        /// The characters of `s` the screen's font can't draw (tests).
         public string Missing(string s)
         {
-            var f = Text != null ? Text.font : null;
-            if (f == null) return "no font";
-            var m = new System.Text.StringBuilder();
-            foreach (char c in s) if (!f.HasCharacter(c, true)) m.Append(c);
-            return f.name + " lacks '" + m + "'";
-        }
-
-        private TextMeshPro Label(Transform parent, string name, Vector3 pos, Vector2 size, float maxSize)
-        {
-            var go = new GameObject(name);
-            go.layer = _layer;
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = pos;
-            var t = go.AddComponent<TextMeshPro>();
-            t.rectTransform.sizeDelta = size;
-            t.enableAutoSizing = true; t.fontSizeMin = maxSize * 2f; t.fontSizeMax = maxSize * 10f;   // TMP: about 10 points a metre
-            t.alignment = TextAlignmentOptions.Center;
-            t.enableWordWrapping = true;
-            t.color = Color.white;
-            return t;
-        }
-
-        private void LateUpdate()
-        {
-            foreach (var b in _buttons)
-            {
-                if (b.Back == null) continue;
-                var want = LookedButton == b ? _backLit : b.Lit ? _backOn : _back;
-                if (b.Back.sharedMaterial != want) b.Back.sharedMaterial = want;
-            }
+            string m = Crt.Missing(s);
+            return m.Length == 0 ? "the CRT font draws them all" : "the CRT font lacks '" + m + "'";
         }
 
         /// Why the last look found no button (bridge: `get HeadUnit.Touch.Miss`), or what it found.
@@ -310,7 +226,7 @@ namespace HeadUnit
             return false;
         }
 
-        public IEnumerable<string> ButtonIds() { foreach (var b in _buttons) yield return b.Id + "=" + (b.Label != null ? b.Label.text : ""); }
+        public IEnumerable<string> ButtonIds() { foreach (var b in _buttons) yield return b.Id; }
 
         /// What the crosshair is on, and a click on it. Called once a frame (Controls).
         public static void Tick(bool canClick)
@@ -323,7 +239,11 @@ namespace HeadUnit
             Find(cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f)));
             if (LookedButton == null) return;
             if (canClick) { float w = Input.mouseScrollDelta.y; Wheel = w > 0.01f ? 1 : w < -0.01f ? -1 : 0; }
-            if (canClick && Input.GetMouseButtonDown(0)) LookedButton.Press?.Invoke();
+            if (canClick && Input.GetMouseButtonDown(0))
+            {
+                Looked.PressedId = LookedButton.Id; Looked.PressedAt = Time.realtimeSinceStartup;
+                LookedButton.Press?.Invoke();
+            }
         }
     }
 }

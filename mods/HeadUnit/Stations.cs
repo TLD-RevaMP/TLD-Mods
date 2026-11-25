@@ -45,7 +45,7 @@ namespace HeadUnit
             if (n.IndexOf("ber", System.StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("german", System.StringComparison.OrdinalIgnoreCase) >= 0)
                 return "Übermensch Radio";
             if (n.Length > 0 && !float.TryParse(n, out _)) return full || n.Length <= 16 ? n : n.Substring(0, 16);
-            return am ? $"AM {ch.FR:0}" : $"FM {ch.FR:0.0}";
+            return (am ? "AM " : "FM ") + Freq(am, ch.FR);
         }
 
         /// The band's stations, low to high.
@@ -58,6 +58,6 @@ namespace HeadUnit
             return l;
         }
 
-        public static string Freq(bool am, float fr) => am ? $"{fr:0}" : $"{fr:0.0}";
+        public static string Freq(bool am, float fr) => fr.ToString(am ? "0" : "0.0", System.Globalization.CultureInfo.InvariantCulture);
     }
 }
