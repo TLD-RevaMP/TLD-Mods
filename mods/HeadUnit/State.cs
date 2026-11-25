@@ -6,6 +6,9 @@ namespace HeadUnit
 {
     public enum Mode : byte { Radio = 0, Video = 1, Nav = 2 }
 
+    /// The + ADD screen (MEDIA): closed, its search bar, or a search's results.
+    public enum AddScreen : byte { None = 0, Bar = 1, Results = 2 }
+
     public sealed class QueueItem
     {
         public string VideoId, Title;
@@ -14,9 +17,10 @@ namespace HeadUnit
     }
 
     /// What everyone in one car shares on its head unit: the YouTube queue, what plays and where, its volume, and what
-    /// the screen shows: the tab (RADIO, MEDIA, NAV), the map's zoom and the bend hints. One player switching any of
-    /// them switches it for everyone, as one screen would. What a player is in the middle of stays their own
-    /// (UnitBehaviour): the queue list, FULL, BIG, a link being typed or a search. The radio is shared by the game.
+    /// the screen shows: the tab (RADIO, MEDIA, NAV), the map's zoom, and the + ADD screen (open or not, what its bar
+    /// holds, a search running, the results and the page of them shown). One player changing any of them changes it
+    /// for everyone, as one screen would. What stays each player's own (UnitBehaviour): the queue list, FULL, BIG, and
+    /// whose keyboard types into the bar. The radio is shared by the game.
     /// Playback is a position on the session clock, never a stream:
     /// position = Playing ? AnchorPos + (SessionTime - AnchorTime) : AnchorPos. Every machine plays the video itself
     /// and keeps to that (Video.cs).
@@ -32,10 +36,20 @@ namespace HeadUnit
         // the screen (0.3.0), written after the queue: a record from before has none of it and reads as these
         public Mode Tab = Mode.Radio;    // the tab on the screen
         public byte Zoom = 2;            // the NAV map's zoom (MapView.Zooms: 0 nearest .. MaxZoom farthest)
-        public bool Hints = true;        // the next bend shown over the other tabs
+        public bool Hints = true;        // the next bend shown over the other tabs (0.3.0; the screen no longer shows it)
+        // the + ADD screen (0.3.2), written after the screen: a record from before has none of it and reads as closed
+        public AddScreen Add = AddScreen.None;
+        public string AddText = "";      // what the search bar holds: a link or words
+        public bool Searching;           // a player's machine is searching for it
+        public string Searched = "";     // the words the results are for
+        public readonly List<QueueItem> Results = new List<QueueItem>();   // VideoId, Title, Duration
+        public byte ResultsTop;          // the first result shown
 
         /// The farthest zoom (MapView.Zooms has MaxZoom + 1).
         public const byte MaxZoom = 5;
+        /// The most results (Ytdlp.SearchCount asks for 15), and the bar's longest text in UTF-8 bytes. With a full
+        /// queue the record stays under its 32 KB: 200 queued (~28 KB) and 20 results (~2.8 KB).
+        public const int MaxResults = 20, TextBytes = 300;
 
         public const int MaxQueue = 200;
         /// A title's longest, in UTF-8 bytes: 200 of them stay under the record's 32 KB, in any script (60 Japanese
@@ -69,7 +83,14 @@ namespace HeadUnit
             w.VarUInt((uint)Queue.Count);
             foreach (var q in Queue) { w.String(q.VideoId); w.String(q.Title); w.Float(q.Duration); w.VarUInt((uint)q.AddedBy); }
             w.Byte((byte)Tab); w.Byte(Zoom); w.Bool(Hints);
+            w.Byte((byte)Add); w.String(AddText); w.Bool(Searching); w.String(Searched);
+            w.VarUInt((uint)Results.Count);
+            foreach (var q in Results) { w.String(q.VideoId); w.String(q.Title); w.Float(q.Duration); }
+            w.Byte(ResultsTop);
         }
+
+        /// The + ADD screen closed: its text and results go with it (they would only fill the record).
+        public void CloseAdd() { Add = AddScreen.None; AddText = ""; Searching = false; Searched = ""; Results.Clear(); ResultsTop = 0; }
 
         public bool Read(RecordReader r)
         {
@@ -88,7 +109,26 @@ namespace HeadUnit
             byte zoom = r.Remaining >= 1 ? r.Byte() : (byte)2;
             bool hints = r.Remaining < 1 || r.Bool();
             if (r.Bad || tab > (byte)Mode.Nav || zoom > MaxZoom) return false;
+            // the + ADD screen came after it (0.3.2): a record from before has it closed
+            byte add = 0, top = 0; string text = "", searched = ""; bool searching = false;
+            var res = new List<QueueItem>();
+            if (r.Remaining >= 1)
+            {
+                add = r.Byte(); text = r.String(); searching = r.Bool(); searched = r.String();
+                uint m = r.VarUInt();
+                if (r.Bad || add > (byte)AddScreen.Results || m > MaxResults) return false;
+                for (uint i = 0; i < m; i++)
+                {
+                    var it = new QueueItem { VideoId = r.String(), Title = r.String(), Duration = r.Float() };
+                    if (r.Bad || !Ytdlp.ValidVideoId(it.VideoId)) return false;
+                    res.Add(it);
+                }
+                top = r.Byte();
+                if (r.Bad) return false;
+            }
             Tab = (Mode)tab; Zoom = zoom; Hints = hints;
+            Add = (AddScreen)add; AddText = text ?? ""; Searching = searching; Searched = searched ?? ""; ResultsTop = top;
+            Results.Clear(); Results.AddRange(res);
             Car = car; Volume = Mathf.Clamp01(vol); Index = index; Playing = playing; AnchorTime = at; AnchorPos = Mathf.Max(0f, pos);
             Queue.Clear(); Queue.AddRange(q);
             return true;
@@ -96,7 +136,12 @@ namespace HeadUnit
     }
 
     /// The edits a player can ask the unit's owner for (UnitStateType.OnEdit).
-    public enum Op : byte { Volume = 1, Play = 2, Pause = 3, Seek = 4, Next = 5, Prev = 6, Add = 7, Remove = 8, Jump = 9, Clear = 11, Ended = 12, Tab = 13, Zoom = 14, Hints = 15 }
+    public enum Op : byte
+    {
+        Volume = 1, Play = 2, Pause = 3, Seek = 4, Next = 5, Prev = 6, Add = 7, Remove = 8, Jump = 9, Clear = 11, Ended = 12, Tab = 13, Zoom = 14, Hints = 15,
+        // the + ADD screen (0.3.2)
+        AddOpen = 16, AddClose = 17, AddText = 18, AddSearching = 19, AddResults = 20, AddPage = 21,
+    }
 
     /// One shared object per car with a head unit in use: it carries the UnitState. It has no body of its own (an
     /// empty GameObject); the unit in the car's radio slot finds it by the car's id. Whoever first uses a unit in a
@@ -225,6 +270,62 @@ namespace HeadUnit
                     byte t = e.Byte();
                     if (e.Bad || t > (byte)Mode.Nav || (Mode)t == s.Tab) return false;
                     s.Tab = (Mode)t;
+                    s.CloseAdd();   // + ADD is MEDIA's: another tab closes it, for everyone
+                    return true;
+                }
+                case Op.AddOpen:
+                {
+                    // the search bar opened (+ ADD, SEARCH AGAIN), holding `text`
+                    string t = UnitState.Clip(e.String(), UnitState.TextBytes);
+                    if (e.Bad || (s.Add == AddScreen.Bar && s.AddText == t && !s.Searching)) return false;
+                    s.CloseAdd();
+                    s.Add = AddScreen.Bar; s.AddText = t; s.Tab = Mode.Video;
+                    return true;
+                }
+                case Op.AddClose:
+                    if (s.Add == AddScreen.None) return false;
+                    s.CloseAdd();
+                    return true;
+                case Op.AddText:
+                {
+                    string t = UnitState.Clip(e.String(), UnitState.TextBytes);
+                    if (e.Bad || s.Add != AddScreen.Bar || t == s.AddText) return false;
+                    s.AddText = t;
+                    return true;
+                }
+                case Op.AddSearching:
+                {
+                    bool on = e.Bool();
+                    if (e.Bad || s.Add != AddScreen.Bar || on == s.Searching) return false;
+                    s.Searching = on;
+                    return true;
+                }
+                case Op.AddResults:
+                {
+                    // a search's videos, in pieces that fit an edit (1 KB): the first piece (at 0) opens the results in
+                    // place of the bar, the next ones add to them. A piece for a bar closed meanwhile is refused.
+                    string words = UnitState.Clip(e.String(), UnitState.TextBytes);
+                    uint at = e.VarUInt(), n = e.VarUInt();
+                    if (e.Bad || n == 0 || at + n > UnitState.MaxResults) return false;
+                    if (at == 0 ? s.Add != AddScreen.Bar : (s.Add != AddScreen.Results || at != s.Results.Count || words != s.Searched)) return false;
+                    var got = new List<QueueItem>();
+                    for (uint k = 0; k < n; k++)
+                    {
+                        var it = new QueueItem { VideoId = e.String(), Title = e.String(), Duration = e.Float() };
+                        if (e.Bad || !Ytdlp.ValidVideoId(it.VideoId) || float.IsNaN(it.Duration)) return false;
+                        it.Title = UnitState.Clip(it.Title, UnitState.TitleBytes);
+                        it.Duration = Mathf.Max(0f, it.Duration);
+                        got.Add(it);
+                    }
+                    if (at == 0) { s.Results.Clear(); s.Add = AddScreen.Results; s.Searched = words; s.Searching = false; s.ResultsTop = 0; }
+                    s.Results.AddRange(got);
+                    return true;
+                }
+                case Op.AddPage:
+                {
+                    byte top = e.Byte();
+                    if (e.Bad || s.Add != AddScreen.Results || (top > 0 && top >= s.Results.Count) || top == s.ResultsTop) return false;
+                    s.ResultsTop = top;
                     return true;
                 }
                 case Op.Zoom:

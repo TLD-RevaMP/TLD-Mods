@@ -45,20 +45,28 @@ namespace HeadUnit
         private Mode _seenTab; private int _seenZoom; private bool _screenSeen;
         /// This player's own view of the unit (not shared): the queue list, FULL.
         private bool _listOpen, _full;
-        /// The tools dialog opened from the MEDIA tab's GET TOOLS (a video that can't play here): NOT NOW closes it
-        /// rather than going on to a link.
+        /// The tools dialog opened from the MEDIA tab's GET TOOLS (a video that can't play here) or from SEARCH on a
+        /// machine without yt-dlp: NOT NOW closes it rather than going on to the search bar.
         private bool _toolsOnly;
         /// The queue list's first row when scrolled (UP / DOWN, the mouse wheel over the list); -1: around what plays.
         private int _listTop = -1;
 
-        /// A question on this unit's screen (it replaces the tab's picture and buttons until answered).
+        /// A question on this unit's screen (it replaces the tab's picture and buttons until answered): the + ADD
+        /// screen (the search bar, a search's results) is the car's, followed like the tab (_add, from UnitState.Add);
+        /// the offer to download the programs is this machine's own (_tools), since each player downloads their own.
         private enum Dialog { None, Link, Ytdlp, Results }
-        /// A search's videos (Dialog.Results): tap one to add it; the ones added marked.
-        private List<Ytdlp.Entry> _results = new List<Ytdlp.Entry>();
-        private readonly HashSet<string> _resultsAdded = new HashSet<string>();
-        private string _searched = ""; private int _resultsTop; private bool _searching;
-        private Dialog _dialog;
+        private Dialog _dialog => _tools ? Dialog.Ytdlp : _add == AddScreen.Bar ? Dialog.Link : _add == AddScreen.Results ? Dialog.Results : Dialog.None;
+        private bool _tools;
+        private AddScreen _add, _seenAdd;
+        /// The first search result shown (UP / DOWN, the wheel), the car's as the zoom is.
+        private int _resultsTop, _seenTop;
+        /// A search running on this machine (the car's state says "searching" to everyone).
+        private bool _searching;
+        /// The bar's text while this player types into it (sent to the car's state a few times a second, and at once
+        /// on Enter, Escape and the buttons); everyone else sees the state's.
         private string _link = "";
+        private bool _linkSent = true; private float _linkSentAt;
+        public static readonly float TextSendS = 0.25f;
         /// The unit whose link is being typed (keys go to it, the game takes none: Controls.InputSelected).
         public static UnitBehaviour TypingInto;
         private float _savedVolume = 0.3f;
@@ -93,6 +101,7 @@ namespace HeadUnit
             if (Time.realtimeSinceStartup >= _findAt) { _findAt = Time.realtimeSinceStartup + 1f; Bind(); }
             var s = State;
             FollowScreen(s);
+            SendLink(false);
             bool radioOn = Radio == null || Radio.ON;
             bool powered = Powered;
 
@@ -113,7 +122,7 @@ namespace HeadUnit
             {
                 // one short line, what was searched: two didn't fit the strip and showed nothing (headunit.py pictures,
                 // 2026-10-16)
-                string head = Panel.Flashing ?? _searched;
+                string head = Panel.Flashing ?? s?.Searched ?? "";
                 if (head.Length > 44) head = head.Substring(0, 41).TrimEnd() + "...";
                 Show(new Color(0.05f, 0.05f, 0.07f), null, head, top: true);
                 return;
@@ -135,7 +144,7 @@ namespace HeadUnit
                     Touch.Progress(f >= 0f ? f : c);
                 }
                 else if (NeedsTools(s)) overlay = "tools needed";
-                else overlay = _video.Problem ?? (s.Playing ? "" : "paused");
+                else overlay = _video.Problem ?? "";   // paused: the PLAY button says so
                 if (!_listOpen && flash != null) overlay = flash + (overlay.Length > 0 ? "\n" + overlay : "");
                 bool pic = !_listOpen && _video != null && _video.Ready;
                 Show(Color.black, pic ? _video.Texture : null, overlay, aspect: pic ? _video.Aspect : -1f);
@@ -189,10 +198,11 @@ namespace HeadUnit
                 bool update = LookupFailed;
                 key = "dialog-link" + (update ? "-update" : "");
                 bool typing = TypingInto == this;
-                bottom.Add(("paste", "PASTE", () => { _link = (GUIUtility.systemCopyBuffer ?? "").Trim(); }, false));
-                bottom.Add(("type", typing ? "TYPING" : "TYPE", () => TypingInto = typing ? null : this, typing));
-                bottom.Add(("del", "DEL", () => { if (_link.Length > 0) _link = _link.Substring(0, _link.Length - 1); }, false));
-                bottom.Add(("add", IsLink(_link) || _link.Trim().Length == 0 ? "ADD" : "SEARCH", AddLink, false));
+                string text = BarText(s);
+                bottom.Add(("paste", "PASTE", () => SetLink((GUIUtility.systemCopyBuffer ?? "").Trim()), false));
+                bottom.Add(("type", typing ? "TYPING" : "TYPE", () => { if (TypingInto == this) StopTyping(); else StartTyping(); }, typing));
+                bottom.Add(("del", "DEL", () => { string t = BarText(State); if (t.Length > 0) SetLink(t.Substring(0, t.Length - 1)); }, false));
+                bottom.Add(("add", IsLink(text) || text.Trim().Length == 0 ? "ADD" : "SEARCH", AddLink, false));
                 bottom.Add(("cancel", "CANCEL", CloseDialog, false));
                 // a link or search here failed in yt-dlp (an old one, mostly): updating it is offered here too (with
                 // nothing in the queue, MEDIA has no failing video to offer it)
@@ -200,36 +210,42 @@ namespace HeadUnit
             }
             else if (_dialog == Dialog.Results)
             {
+                // the car's results, the page the car's screen is on; marked: in the car's queue already
                 key = "dialog-results";
                 list = new List<(string, string, Action, bool)>();
-                if (Touch.Looked == Touch && Touch.Wheel != 0) _resultsTop -= Touch.Wheel;
-                _resultsTop = Mathf.Clamp(_resultsTop, 0, Mathf.Max(0, _results.Count - ResultRows));
-                for (int i = _resultsTop; i < _results.Count && i < _resultsTop + ResultRows; i++)
+                var results = s != null ? s.Results : new List<QueueItem>();
+                if (Touch.Looked == Touch && Touch.Wheel != 0) SetResultsTop(_resultsTop - Touch.Wheel, results.Count);
+                int first = Mathf.Clamp(_resultsTop, 0, Mathf.Max(0, results.Count - ResultRows));
+                string marks = "";
+                for (int i = first; i < results.Count && i < first + ResultRows; i++)
                 {
-                    var e = _results[i];
-                    bool added = _resultsAdded.Contains(e.Id);
+                    var q = results[i];
+                    var e = new Ytdlp.Entry { Id = q.VideoId, Title = q.Title, Duration = q.Duration };
+                    bool added = s.Queue.Exists(it => it.VideoId == q.VideoId);
+                    marks += added ? "1" : "0";
                     string title = e.Title.Length > ResultChars ? e.Title.Substring(0, ResultChars - 3).TrimEnd() + "..." : e.Title;
-                    list.Add(("r" + (i - _resultsTop), title + (e.Duration > 0 ? "  " + Clock(e.Duration) : ""), () =>
+                    list.Add(("r" + (i - first), title + (e.Duration > 0 ? "  " + Clock(e.Duration) : ""), () =>
                     {
-                        if (Controls.Send(this, new List<Ytdlp.Entry> { e }) == 1) { _resultsAdded.Add(e.Id); Panel.Flash("added: " + e.Title); }
+                        if (Controls.Send(this, new List<Ytdlp.Entry> { e }) == 1) Panel.Flash("added: " + e.Title);
                         else Panel.Flash("couldn't add: is the unit in a car's radio slot?");
                     }, added));
                 }
-                key += list.Count + "@" + _resultsTop + "+" + _resultsAdded.Count;
-                bottom.Add(("up", "UP", () => _resultsTop -= ResultRows, false));
-                bottom.Add(("down", "DOWN", () => _resultsTop += ResultRows, false));
-                bottom.Add(("again", "SEARCH AGAIN", () => { _dialog = Dialog.Link; _link = _searched; }, false));
+                key += list.Count + "@" + first + "+" + marks;
+                bottom.Add(("up", "UP", () => SetResultsTop(first - ResultRows, State?.Results.Count ?? 0), false));
+                bottom.Add(("down", "DOWN", () => SetResultsTop(first + ResultRows, State?.Results.Count ?? 0), false));
+                bottom.Add(("again", "SEARCH AGAIN", () => OpenBar(State?.Searched ?? ""), false));
                 bottom.Add(("done", "DONE", CloseDialog, false));
             }
             else if (_dialog == Dialog.Ytdlp)
             {
                 key = "dialog-ytdlp";
-                bottom.Add(("download", "DOWNLOAD", () => { CloseDialog(); Ytdlp.Download(); }, false));
-                // without yt-dlp nothing plays; without ffmpeg only 360p: then on to the link
+                bottom.Add(("download", "DOWNLOAD", () => { _tools = false; Ytdlp.Download(); }, false));
+                // without yt-dlp nothing plays; without ffmpeg only 360p: then on to the search bar
                 bottom.Add(("notnow", "NOT NOW", () =>
                 {
                     if (Ytdlp.Present) Ytdlp.FfmpegDeclined = true;
-                    if (Ytdlp.Present && !_toolsOnly) { _dialog = Dialog.Link; _link = ""; } else CloseDialog();
+                    _tools = false;
+                    if (Ytdlp.Present && !_toolsOnly) OpenBar("");
                 }, false));
             }
             else if (Tab == Mode.Radio)
@@ -289,7 +305,7 @@ namespace HeadUnit
                     bottom.Add(("link", tools ? "GET TOOLS" : "+ ADD", () =>
                     {
                         _toolsOnly = tools;
-                        _dialog = tools || !Ytdlp.Present || Ytdlp.OfferFfmpeg ? Dialog.Ytdlp : Dialog.Link; _link = "";
+                        if (tools || !Ytdlp.Present || Ytdlp.OfferFfmpeg) _tools = true; else OpenBar("");
                     }, tools));
                     bottom.Add(("list", "LIST", () => { _listOpen = true; _listTop = -1; }, false));
                     // FULL has nothing to show while yt-dlp fails: the same place updates it
@@ -323,10 +339,61 @@ namespace HeadUnit
         /// only when it changed there, so a press of this player's that is still on its way isn't undone meanwhile.
         private void FollowScreen(UnitState s)
         {
-            if (s == null) { _screenSeen = false; return; }   // out of the car: the next car's screen is taken as it is
+            // out of the car: the next car's screen is taken as it is (and no car, no + ADD screen)
+            if (s == null) { _screenSeen = false; _add = AddScreen.None; return; }
             if ((!_screenSeen || s.Tab != _seenTab) && Tab != s.Tab) { Tab = s.Tab; _listOpen = false; _full = false; _listTop = -1; }
             if (!_screenSeen || s.Zoom != _seenZoom) _zoom = s.Zoom;
-            _screenSeen = true; _seenTab = s.Tab; _seenZoom = s.Zoom;
+            if (!_screenSeen || s.Add != _seenAdd) { _add = s.Add; if (_add != AddScreen.None) { _listOpen = false; _full = false; } }
+            if (!_screenSeen || s.ResultsTop != _seenTop) _resultsTop = s.ResultsTop;
+            _screenSeen = true; _seenTab = s.Tab; _seenZoom = s.Zoom; _seenAdd = s.Add; _seenTop = s.ResultsTop;
+        }
+
+        /// The + ADD screen's search bar opened holding `text`, for everyone in the car.
+        private void OpenBar(string text)
+        {
+            _tools = false; _listOpen = false; _full = false;
+            if (TypingInto == this) TypingInto = null;
+            _link = text; _linkSent = true;
+            _add = AddScreen.Bar;
+            Edit(w => { w.Byte((byte)Op.AddOpen); w.String(text); });
+        }
+
+        /// What the bar holds: what this player is typing, else the car's.
+        private string BarText(UnitState s) => TypingInto == this ? _link : s?.AddText ?? "";
+
+        /// The bar's text set (PASTE, DEL): here, and for everyone at once.
+        private void SetLink(string t)
+        {
+            t = UnitState.Clip(t, UnitState.TextBytes);
+            _link = t; _linkSent = false;
+            SendLink(true);
+        }
+
+        /// This player's typing sent to the car's bar: at most every TextSendS while typing, at once when `now`.
+        private void SendLink(bool now)
+        {
+            if (_linkSent || (!now && Time.realtimeSinceStartup - _linkSentAt < TextSendS)) return;
+            _linkSent = true; _linkSentAt = Time.realtimeSinceStartup;
+            var s = State;
+            if (_add != AddScreen.Bar || (s != null && s.AddText == _link)) return;
+            string t = _link;
+            Edit(w => { w.Byte((byte)Op.AddText); w.String(t); });
+        }
+
+        /// TYPE: this player's keys go into the bar, starting from what it holds now.
+        private void StartTyping() { _link = State?.AddText ?? ""; _linkSent = true; TypingInto = this; }
+
+        /// Typing stopped (TYPE again, Escape, Enter): the text as it is now sent to everyone.
+        private void StopTyping() { if (TypingInto == this) TypingInto = null; SendLink(true); }
+
+        /// The page of results: here at once, and for everyone in the car.
+        private void SetResultsTop(int top, int count)
+        {
+            top = Mathf.Clamp(top, 0, Mathf.Max(0, count - ResultRows));
+            if (top == _resultsTop) return;
+            _resultsTop = top;
+            var s = State;
+            if (s == null || s.ResultsTop != top) { byte b = (byte)top; Edit(w => { w.Byte((byte)Op.AddPage); w.Byte(b); }); }
         }
 
         /// This player switches the tab: here at once, and for everyone in the car through the shared state. Sent unless
@@ -376,56 +443,113 @@ namespace HeadUnit
             if (_dialog == Dialog.Ytdlp && Ytdlp.Present && Plugin.Convert.Value) return "Download ffmpeg from GitHub (80 MB)?";
             if (_dialog == Dialog.Ytdlp && Ytdlp.Present) return $"Download ffmpeg from GitHub (80 MB) for {Plugin.MaxHeight.Value}p?";
             if (_dialog == Dialog.Ytdlp) return "Download yt-dlp, Deno and ffmpeg from GitHub (140 MB)?";
-            // a search bar: what is typed (a link or words), nothing explaining the buttons (playtest 2026-11-24)
-            string shown = _link.Length > 48 ? "..." + _link.Substring(_link.Length - 45) : _link;
+            // a search bar: what is typed (a link or words), nothing explaining the buttons (playtest 2026-11-24); the
+            // car's, so everyone sees what one player types and that a search runs
+            var s = State;
+            string text = BarText(s);
+            string shown = text.Length > 48 ? "..." + text.Substring(text.Length - 45) : text;
             string bar = shown.Length == 0 && TypingInto != this ? "search" : shown + (TypingInto == this ? "_" : "");
-            string status = _searching ? "searching..." : Panel.Flashing;
+            string status = _searching || (s != null && s.Searching) ? "searching..." : Panel.Flashing;
             return bar + (status != null ? "\n" + status : "");
         }
 
-        private void CloseDialog() { _dialog = Dialog.None; if (TypingInto == this) TypingInto = null; }
+        /// The dialog closed: the download offer here, the + ADD screen for everyone in the car.
+        private void CloseDialog()
+        {
+            _tools = false;
+            if (TypingInto == this) TypingInto = null;
+            var s = State;
+            bool open = _add != AddScreen.None || (s != null && s.Add != AddScreen.None);
+            _add = AddScreen.None;
+            if (open) Edit(w => w.Byte((byte)Op.AddClose));
+        }
 
         private static bool IsLink(string t) => Spotify.CleanLink(t) != null || Ytdlp.CleanLink(t) != null;
         private static string Clock(float s) => s >= 3600f ? $"{(int)(s / 3600)}:{(int)(s % 3600 / 60):00}:{(int)(s % 60):00}" : $"{(int)(s / 60)}:{(int)(s % 60):00}";
 
-        /// The dialog's text: a link is added as before; anything else is searched on YouTube (Ytdlp.Search), the
-        /// videos shown to pick from.
-        private void AddLink()
+        /// The bar's text (or `text`): a link is added as before; anything else is searched on YouTube (Ytdlp.Search)
+        /// by this machine, and the videos go into the car's results for everyone to pick from.
+        private void AddLink() => AddLink(null);
+        private void AddLink(string text)
         {
-            string t = _link.Trim();
+            string t = (text ?? BarText(State)).Trim();
             if (t.Length == 0) return;
+            StopTyping();   // the text as it is now, for everyone
+            // the bar is the car's, so a player without yt-dlp can press this: the download offered here (the bar
+            // stays open for the others)
+            if (!Ytdlp.Present) { _toolsOnly = true; _tools = true; return; }
             if (IsLink(t)) { CloseDialog(); Controls.AddLink(this, t); return; }
             if (_searching) return;
-            if (TypingInto == this) TypingInto = null;
             _searching = true;
+            Edit(w => { w.Byte((byte)Op.AddSearching); w.Bool(true); });
             Ytdlp.Search(t, list =>
             {
                 _searching = false;
-                if (_dialog != Dialog.Link) return;   // closed meanwhile
-                if (list == null || list.Count == 0) { Panel.Flash(list == null ? Ytdlp.Status : "nothing found for that"); return; }
-                _results = list; _resultsAdded.Clear(); _resultsTop = 0; _searched = t;
-                _dialog = Dialog.Results;
+                if (_add != AddScreen.Bar) return;   // closed meanwhile (here, or by another player)
+                list = list?.FindAll(e => Ytdlp.ValidVideoId(e.Id));
+                if (list == null || list.Count == 0)
+                {
+                    Panel.Flash(list == null ? Ytdlp.Status : "nothing found for that");
+                    Edit(w => { w.Byte((byte)Op.AddSearching); w.Bool(false); });
+                    return;
+                }
+                SendResults(t, list);
             });
         }
 
-        /// Tests (Probe.Search): the dialog's text set and ADD/SEARCH pressed; the results so far.
-        public void TestSubmit(string text) { _dialog = Dialog.Link; _link = text; AddLink(); }
-        public string TestResults() => _dialog != Dialog.Results ? (_searching ? "searching" : "dialog " + _dialog + " " + Panel.Flashing) : string.Join(" | ", _results.ConvertAll(e => e.Id + " " + e.Title + " " + Clock(e.Duration)));
+        /// A search's videos into the car's results, in pieces that fit an edit's 1 KB (as Controls.Send does for the
+        /// queue): the first piece shows them in place of the bar, for everyone.
+        private void SendResults(string words, List<Ytdlp.Entry> list)
+        {
+            const int EditBytes = 1000;
+            words = UnitState.Clip(words, UnitState.TextBytes);
+            int head = 8 + System.Text.Encoding.UTF8.GetByteCount(words);
+            int max = Mathf.Min(list.Count, UnitState.MaxResults), at = 0, i = 0;
+            while (i < max)
+            {
+                var b = new List<Ytdlp.Entry>();
+                int bytes = head;
+                for (; i < max; i++)
+                {
+                    var e = list[i];
+                    string title = UnitState.Clip(e.Title != null && e.Title.Length > 60 ? e.Title.Substring(0, 60) : e.Title, UnitState.TitleBytes);
+                    int size = 2 + e.Id.Length + 2 + System.Text.Encoding.UTF8.GetByteCount(title) + 4;
+                    if (b.Count > 0 && bytes + size > EditBytes) break;
+                    b.Add(new Ytdlp.Entry { Id = e.Id, Title = title, Duration = e.Duration }); bytes += size;
+                }
+                uint start = (uint)at;
+                if (!Edit(w =>
+                {
+                    w.Byte((byte)Op.AddResults); w.String(words); w.VarUInt(start); w.VarUInt((uint)b.Count);
+                    foreach (var e in b) { w.String(e.Id); w.String(e.Title); w.Float(e.Duration); }
+                })) return;
+                at += b.Count;
+            }
+        }
+
+        /// Tests (Probe.Search): the bar opened with `text` and ADD/SEARCH pressed; the car's results so far.
+        public void TestSubmit(string text) { OpenBar(text); AddLink(text); }
+        public string TestResults()
+        {
+            var s = State;
+            if (_dialog != Dialog.Results || s == null) return _searching || (s != null && s.Searching) ? "searching" : "dialog " + _dialog + " " + Panel.Flashing;
+            return string.Join(" | ", s.Results.ConvertAll(e => e.VideoId + " " + e.Title + " " + Clock(e.Duration)));
+        }
 
         /// Keys for the unit whose link is being typed (once a frame, Controls).
         public static void TypeTick()
         {
             var u = TypingInto;
             if (u == null) return;
-            if (u._dialog != Dialog.Link || !u.isActiveAndEnabled) { TypingInto = null; return; }
-            if (Input.GetKeyDown(KeyCode.Escape)) { TypingInto = null; return; }
+            if (u._dialog != Dialog.Link || !u.isActiveAndEnabled) { TypingInto = null; return; }   // closed, by anyone
+            if (Input.GetKeyDown(KeyCode.Escape)) { u.StopTyping(); return; }
             bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
-            if (ctrl && Input.GetKeyDown(KeyCode.V)) { u._link += (GUIUtility.systemCopyBuffer ?? "").Trim(); return; }
+            if (ctrl && Input.GetKeyDown(KeyCode.V)) { u._link = UnitState.Clip(u._link + (GUIUtility.systemCopyBuffer ?? "").Trim(), UnitState.TextBytes); u._linkSent = false; return; }
             foreach (char c in Input.inputString)
             {
-                if (c == '\b') { if (u._link.Length > 0) u._link = u._link.Substring(0, u._link.Length - 1); }
+                if (c == '\b') { if (u._link.Length > 0) { u._link = u._link.Substring(0, u._link.Length - 1); u._linkSent = false; } }
                 else if (c == '\n' || c == '\r') { u.AddLink(); return; }
-                else if (!char.IsControl(c) && u._link.Length < 300) u._link += c;
+                else if (!char.IsControl(c) && System.Text.Encoding.UTF8.GetByteCount(u._link) + 4 <= UnitState.TextBytes) { u._link += c; u._linkSent = false; }
             }
         }
 

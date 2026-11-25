@@ -6,9 +6,9 @@ In the game: rare loot in a few models, each fitting only some cars. The game's 
 touch screen (look at a button and click, as with the game's knobs) has three tabs: the radio, YouTube with a queue,
 and navigation (a map of the roads around the car and the road ahead). A unit can also be glued
 anywhere in the car, like any item. In a session, everyone in or near the car sees the same video at the same moment,
-and the same screen: whoever switches to RADIO, MEDIA or NAV or zooms the map does it for
-everyone (the radio itself is shared by the game). What a player is in the middle of stays their own: the queue list,
-FULL, BIG, a link being typed, a search's results.
+and the same screen: whoever switches to RADIO, MEDIA or NAV, zooms the map, or opens + ADD, types in its bar,
+searches or pages the results does it for everyone (the radio itself is shared by the game). What a player is in the
+middle of stays their own: the queue list, FULL, BIG.
 
 ## What it shows
 
@@ -36,7 +36,7 @@ FULL, BIG, a link being typed, a search's results.
 | `Plugin.cs` | Settings, API registration, Harmony patches, the per-frame runner |
 | `Units.cs` | The head unit models as game items, and which cars each fits |
 | `UnitBehaviour.cs` | On every unit: finds its car and that car's shared state, and shows it |
-| `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom; a hints flag the screen no longer uses) |
+| `State.cs` | The shared state record and its type (queue, playback position, the screen: tab, map zoom, the + ADD screen; a hints flag it no longer uses) |
 | `Touch.cs`, `Controls.cs`, `Panel.cs` | The touch screen, crosshair clicks, typing a link, the passengers' big picture |
 | `Look.cs` | The unit's body colour, screen and text |
 | `Video.cs` | Plays the video on this machine and keeps it at the shared position |
