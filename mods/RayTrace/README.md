@@ -14,6 +14,9 @@ Every frame, after the opaque geometry and before the post-processing:
    where the game draws none), so distant hills, buildings and cars cast shadows too. Mode 2 everywhere, mode 3 shows
    the shadow mask itself.
 
+**Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it); the mode and the shadow
+strength are also in `BepInEx/config/tldmods.raytrace.cfg`.
+
 Ray traced shadows of cut-out leaves and glass would be solid (the rays see triangles, not textures): those are left out.
 
 ## What it needs
