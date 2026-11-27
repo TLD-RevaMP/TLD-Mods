@@ -99,6 +99,15 @@ static ID3D12Resource* g_tlas; static ID3D12Resource* g_tlasScratch; static uint
 static ID3D12Resource* g_blasScratch; static uint64_t g_blasScratchSize;
 static bool g_ready, g_failed;
 
+// GPU time of our work, per frame: timestamps at its start, after the structures, after the rays and after the composite
+// (four per slot), read back once the slot's fence has passed; averaged over the last 60 frames read
+static ID3D12QueryHeap* g_queries;
+static ID3D12Resource* g_queryReadback;
+static double g_tickMs;
+static bool g_slotTimed[3];
+static double g_gpuBuild, g_gpuRays, g_gpuComposite;
+static int g_gpuSamples;
+
 struct Blas { ID3D12Resource* buffer; ID3D12Resource* vb; uint32_t vertexCount; int lastFrame; };
 static std::unordered_map<uint64_t, Blas> g_blas;
 
@@ -213,6 +222,14 @@ static bool CreatePipelines()
 
     D3D12_DESCRIPTOR_HEAP_DESC hd = {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 5 * kFrames; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     CHECK(g_device->CreateDescriptorHeap(&hd, __uuidof(ID3D12DescriptorHeap), (void**)&g_heap), "CreateDescriptorHeap");
+    D3D12_QUERY_HEAP_DESC qd = {}; qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qd.Count = 4 * kFrames;
+    UINT64 freq = 0;
+    ID3D12CommandQueue* queue = g_d3d12->GetCommandQueue();
+    if (queue && SUCCEEDED(queue->GetTimestampFrequency(&freq)) && freq && SUCCEEDED(g_device->CreateQueryHeap(&qd, __uuidof(ID3D12QueryHeap), (void**)&g_queries)))
+    {
+        g_tickMs = 1000.0 / (double)freq;
+        g_queryReadback = Buffer(8 * 4 * kFrames, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE);
+    }
     g_descSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     for (auto& s : g_slots)
@@ -414,6 +431,22 @@ static bool Frame(const RtFrame& f)
     }
     struct Done { ID3D12GraphicsCommandList4* l; ~Done() { if (l) l->Release(); } } done{ unityList };
     ReleaseSlot(s);
+    if (g_queryReadback && g_slotTimed[g_slot])   // this slot's last frame is done: its timestamps are in
+    {
+        uint64_t* t = nullptr; D3D12_RANGE r = { (SIZE_T)g_slot * 32, (SIZE_T)g_slot * 32 + 32 };
+        if (SUCCEEDED(g_queryReadback->Map(0, &r, (void**)&t)) && t)
+        {
+            uint64_t* q = t + g_slot * 4;
+            if (q[1] >= q[0] && q[2] >= q[1] && q[3] >= q[2])
+            {
+                double k = g_gpuSamples < 60 ? 1.0 / (g_gpuSamples + 1) : 1.0 / 60;
+                g_gpuBuild += ((q[1] - q[0]) * g_tickMs - g_gpuBuild) * k; g_gpuRays += ((q[2] - q[1]) * g_tickMs - g_gpuRays) * k;
+                g_gpuComposite += ((q[3] - q[2]) * g_tickMs - g_gpuComposite) * k; g_gpuSamples++;
+            }
+            D3D12_RANGE none = { 0, 0 }; g_queryReadback->Unmap(0, &none);
+        }
+        g_slotTimed[g_slot] = false;
+    }
     if (unityList) g_list = unityList;
     else
     {
@@ -425,8 +458,10 @@ static bool Frame(const RtFrame& f)
     // descriptors: t1 depth, t2 colour in, t3 (colour in again), u0 the mask, u1 colour out
     Srv(f.depth, Cpu(g_slot, 0)); Srv(f.colorIn, Cpu(g_slot, 1)); Srv(f.colorIn, Cpu(g_slot, 2)); Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4));
 
+    if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 0);
     uint32_t instances = 0;
     bool ok = f.stage < 3 || (BuildBottomLevel(f) && BuildTopLevel(f, s, instances));
+    if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 1);
     if (ok && f.stage >= 4)
     {
         Constants c = {};
@@ -452,6 +487,7 @@ static bool Frame(const RtFrame& f)
         }
         else c.mode = -c.mode;   // no rays this frame: the composite copies the colour through
         UavBarrier(g_mask);
+        if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 2);
         if (f.stage == 5 || f.stage == 51)
         {
             g_list->SetComputeRoot32BitConstants(2, 44, &c, 0);
@@ -460,6 +496,12 @@ static bool Frame(const RtFrame& f)
         }
     }
     UavBarrier(nullptr);   // our writes (the output texture) before Unity copies it back
+    if (g_queries && ok && f.stage >= 4)
+    {
+        g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 3);
+        g_list->ResolveQueryData(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4, 4, g_queryReadback, (UINT64)g_slot * 32);
+        g_slotTimed[g_slot] = true;
+    }
     if (unityList)
         s.fence = g_d3d12->GetNextFrameFenceValue();   // this slot's resources are free once the GPU has finished this frame
     else
@@ -516,8 +558,8 @@ __declspec(dllexport) void __stdcall RT_SetShaders(const void* rtLib, int rtLeng
 
 __declspec(dllexport) int __stdcall RT_Status(char* buffer, int size)
 {
-    snprintf(buffer, size, "%s; events %d, frames traced %d, structures %d (built %d), instances %d, skipped %d%s%s",
-             g_status, g_events, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_error[0] ? "; error: " : "", g_error);
+    snprintf(buffer, size, "%s; events %d, frames traced %d, structures %d (built %d), instances %d, skipped %d; GPU ms: structures %.2f, rays %.2f, composite %.2f%s%s",
+             g_status, g_events, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_gpuBuild, g_gpuRays, g_gpuComposite, g_error[0] ? "; error: " : "", g_error);
     return g_ready ? 2 : g_device ? 1 : 0;
 }
 }

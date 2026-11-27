@@ -33,11 +33,18 @@ DLSS is not part of it: the test machine's GPU is AMD.
 On Direct3D 12 the game's ambient occlusion (post-processing's Multi-Scale Volumetric Obscurance) has no compute shaders
 and throws every frame; this mod switches it to Scalable Ambient Obscurance there.
 
+## Cost
+
+Measured standing still in the test copy (1280x720, graphics jobs off, uncapped; `RayTrace.Bench` through the debug
+bridge): about 4 ms a frame (31.6 to 28.0 fps in one pair of 10 s windows, 34.5 to 38.3 ms in the next). Of that, the GPU
+work is 0.6 ms (structures 0.38, rays 0.18, composite 0.03, from timestamp queries); the rest is the mod's CPU side
+(1.8 ms: the transforms of about 1700 meshes and the spread-out refresh of the list) and the three full-screen copies.
+The first version cost 11.7 ms of CPU a frame: it asked Unity for every mesh's buffers every frame.
+
 ## Not done yet
 
-- Performance: in the test scene it went from 36 to 25 fps at 1280x720 (one ray per pixel, the scene structure rebuilt
-  every frame). Half-resolution rays and updating the scene structure instead of rebuilding it are the next steps.
-- The effect in screenshots is subtle; a scene that shows the far shadows clearly is still to find.
+- From eye level, a shadow on the ground 150 m away is a thin line: the far shadows show best from hills or behind tall
+  objects. Hills beyond 600 m and the distant terrain are not in the ray traced scene.
 - The native plugin is written into `TheLongDrive_Data/Plugins/x86_64` by the mod; Unity loads it when the game starts,
   so a new version takes effect at the next start.
 

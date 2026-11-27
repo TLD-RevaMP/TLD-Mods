@@ -21,6 +21,9 @@ namespace RayTrace
         public static int Stage = 5;
         /// 0: the native side's own command list, run by Unity (ExecuteCommandList); 1: into Unity's own (crashed, kept to compare)
         public static int Submit = 0;
+        /// testing: the camera's depth texture modes before this mod added its own (a depth texture the game did not
+        /// already have costs a depth pass of the whole scene)
+        public static string OriginalDepthMode = "";
 
         private const int Ring = 4;
         private Camera _cam;
@@ -55,6 +58,7 @@ namespace RayTrace
             Camera.onPreRender -= OnPreRender;
             _cam = cam;
             if (cam == null) { Info = "no camera"; return; }
+            OriginalDepthMode = cam.depthTextureMode.ToString();
             cam.depthTextureMode |= DepthTextureMode.Depth;
             _cb ??= new CommandBuffer { name = "RayTrace" };
             cam.AddCommandBuffer(CameraEvent.BeforeImageEffectsOpaque, _cb);
@@ -65,7 +69,8 @@ namespace RayTrace
         private void OnPreRender(Camera cam)
         {
             if (cam != _cam || _cb == null) return;
-            try { Record(cam); }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try { Record(cam); Bench.Record(sw.Elapsed.TotalMilliseconds); }
             catch (Exception e) { Info = "record failed: " + e.GetType().Name + " " + e.Message; _cb.Clear(); }
         }
 

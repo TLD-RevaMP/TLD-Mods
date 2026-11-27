@@ -40,6 +40,7 @@ namespace RayTrace
 
         private void Update()
         {
+            Bench.Frame(Time.unscaledDeltaTime);
             D3D12Fixes.Tick();
             if (_off || !Native.Installed) return;
             try { _tracer.Tick(); }
