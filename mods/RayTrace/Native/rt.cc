@@ -55,6 +55,9 @@ struct RtFrame
     int32_t frame;
     int32_t stage;                  // testing: 2 the event, 3 + the structures, 4 + the rays, 5 + the composite (all); 50 all but the composite, 51 all but the copy back
     int32_t submit;                 // 0: our own command list, run by Unity (ExecuteCommandList); 1: into Unity's own (CommandRecordingState)
+    int32_t effects;                // wanted: 1 sun shadows, 2 ambient occlusion
+    int32_t aoRays;
+    float aoRadius, aoStrength, aoDistance;
 };
 #pragma pack(pop)
 
@@ -94,7 +97,8 @@ static ID3D12PipelineState* g_compositePso;
 static ID3D12Resource* g_shaderTable;
 static ID3D12DescriptorHeap* g_heap;
 static UINT g_descSize;
-static ID3D12Resource* g_mask; static int g_maskW, g_maskH;
+static ID3D12Resource* g_mask; static ID3D12Resource* g_ao; static int g_maskW, g_maskH;
+static const int kDesc = 8;   // per slot: t1 depth, t2 colour in, t3 (spare), u0 shadow mask, u1 colour out, u2 ambient occlusion, u3-u4 (spare)
 static ID3D12Resource* g_tlas; static ID3D12Resource* g_tlasScratch; static uint64_t g_tlasSize, g_tlasScratchSize;
 static ID3D12Resource* g_blasScratch; static uint64_t g_blasScratchSize;
 static bool g_ready, g_failed;
@@ -143,8 +147,8 @@ static DXGI_FORMAT SrvFormat(DXGI_FORMAT f)
     }
 }
 
-static D3D12_CPU_DESCRIPTOR_HANDLE Cpu(int slot, int i) { auto h = g_heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += (SIZE_T)(slot * 5 + i) * g_descSize; return h; }
-static D3D12_GPU_DESCRIPTOR_HANDLE Gpu(int slot) { auto h = g_heap->GetGPUDescriptorHandleForHeapStart(); h.ptr += (UINT64)(slot * 5) * g_descSize; return h; }
+static D3D12_CPU_DESCRIPTOR_HANDLE Cpu(int slot, int i) { auto h = g_heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += (SIZE_T)(slot * kDesc + i) * g_descSize; return h; }
+static D3D12_GPU_DESCRIPTOR_HANDLE Gpu(int slot) { auto h = g_heap->GetGPUDescriptorHandleForHeapStart(); h.ptr += (UINT64)(slot * kDesc) * g_descSize; return h; }
 
 static void Srv(ID3D12Resource* r, D3D12_CPU_DESCRIPTOR_HANDLE at)
 {
@@ -171,11 +175,11 @@ static void UavBarrier(ID3D12Resource* r)
 
 static bool CreatePipelines()
 {
-    // one root signature for both passes: t0 the scene (root SRV), a table of t1 depth, t2 colour in, t3 (unused),
-    // u0 the mask, u1 colour out, and 44 root constants (b0)
+    // one root signature for both passes: t0 the scene (root SRV), a table (kDesc: three SRVs from t1, the rest UAVs
+    // from u0), and 44 root constants (b0)
     D3D12_DESCRIPTOR_RANGE ranges[2] = {};
     ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; ranges[0].NumDescriptors = 3; ranges[0].BaseShaderRegister = 1; ranges[0].OffsetInDescriptorsFromTableStart = 0;
-    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; ranges[1].NumDescriptors = 2; ranges[1].BaseShaderRegister = 0; ranges[1].OffsetInDescriptorsFromTableStart = 3;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; ranges[1].NumDescriptors = kDesc - 3; ranges[1].BaseShaderRegister = 0; ranges[1].OffsetInDescriptorsFromTableStart = 3;
     D3D12_ROOT_PARAMETER p[3] = {};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[0].Descriptor.ShaderRegister = 0;
     p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; p[1].DescriptorTable.NumDescriptorRanges = 2; p[1].DescriptorTable.pDescriptorRanges = ranges;
@@ -220,7 +224,7 @@ static bool CreatePipelines()
     D3D12_COMPUTE_PIPELINE_STATE_DESC cp = {}; cp.pRootSignature = g_rootSig; cp.CS.pShaderBytecode = g_composite.data(); cp.CS.BytecodeLength = g_composite.size();
     CHECK(g_device->CreateComputePipelineState(&cp, __uuidof(ID3D12PipelineState), (void**)&g_compositePso), "CreateComputePipelineState");
 
-    D3D12_DESCRIPTOR_HEAP_DESC hd = {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 5 * kFrames; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    D3D12_DESCRIPTOR_HEAP_DESC hd = {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = kDesc * kFrames; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     CHECK(g_device->CreateDescriptorHeap(&hd, __uuidof(ID3D12DescriptorHeap), (void**)&g_heap), "CreateDescriptorHeap");
     D3D12_QUERY_HEAP_DESC qd = {}; qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qd.Count = 4 * kFrames;
     UINT64 freq = 0;
@@ -270,14 +274,23 @@ static void ReleaseSlot(FrameSlot& s)
     s.release.clear();
 }
 
-static bool EnsureMask(int w, int h)
+static ID3D12Resource* Texture(int w, int h, DXGI_FORMAT format)
 {
-    if (g_mask && g_maskW == w && g_maskH == h) return true;
-    Release(g_mask); g_mask = nullptr;
     D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC d = {}; d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width = w; d.Height = h; d.DepthOrArraySize = 1; d.MipLevels = 1;
-    d.Format = DXGI_FORMAT_R8_UNORM; d.SampleDesc.Count = 1; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    CHECK(g_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, __uuidof(ID3D12Resource), (void**)&g_mask), "mask texture");
+    d.Format = format; d.SampleDesc.Count = 1; d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ID3D12Resource* r = nullptr;
+    if (FAILED(g_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, __uuidof(ID3D12Resource), (void**)&r))) return nullptr;
+    return r;
+}
+
+/// Our own textures at the frame's size: the shadow mask and the ambient occlusion.
+static bool EnsureMask(int w, int h)
+{
+    if (g_mask && g_ao && g_maskW == w && g_maskH == h) return true;
+    Release(g_mask); Release(g_ao);
+    g_mask = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_ao = Texture(w, h, DXGI_FORMAT_R8_UNORM);
+    if (!g_mask || !g_ao) { Error("mask textures"); return false; }
     g_maskW = w; g_maskH = h;
     return true;
 }
@@ -402,8 +415,9 @@ struct Constants   // b0, 44 values (shaders/common.hlsli)
     float sunDir[4];
     float size[4];         // width, height, 1/width, 1/height
     float fadeStart, fadeEnd, strength, maxDistance;
-    int32_t mode, frame, pad0, pad1;
-    float pad2[8];
+    int32_t mode, frame, effects, aoRays;
+    float aoRadius, aoStrength, aoDistance, pad0;
+    float pad1[4];
 };
 static_assert(sizeof(Constants) == 44 * 4, "root constants");
 
@@ -456,7 +470,8 @@ static bool Frame(const RtFrame& f)
     if (!EnsureMask(f.width, f.height)) { if (!unityList) g_list->Close(); return false; }
 
     // descriptors: t1 depth, t2 colour in, t3 (colour in again), u0 the mask, u1 colour out
-    Srv(f.depth, Cpu(g_slot, 0)); Srv(f.colorIn, Cpu(g_slot, 1)); Srv(f.colorIn, Cpu(g_slot, 2)); Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4));
+    Srv(f.depth, Cpu(g_slot, 0)); Srv(f.colorIn, Cpu(g_slot, 1)); Srv(f.colorIn, Cpu(g_slot, 2));
+    Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4)); Uav(g_ao, Cpu(g_slot, 5)); Uav(g_ao, Cpu(g_slot, 6)); Uav(g_ao, Cpu(g_slot, 7));
 
     if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 0);
     uint32_t instances = 0;
@@ -468,13 +483,18 @@ static bool Frame(const RtFrame& f)
         memcpy(c.invViewProj, f.invViewProj, sizeof c.invViewProj); memcpy(c.cameraPos, f.cameraPos, 16); memcpy(c.sunDir, f.sunDir, 16);
         c.size[0] = (float)f.width; c.size[1] = (float)f.height; c.size[2] = 1.0f / f.width; c.size[3] = 1.0f / f.height;
         c.fadeStart = f.fadeStart; c.fadeEnd = f.fadeEnd; c.strength = f.strength; c.maxDistance = f.maxDistance; c.mode = f.mode; c.frame = f.frame;
+        c.aoRays = f.aoRays; c.aoRadius = f.aoRadius; c.aoStrength = f.aoStrength; c.aoDistance = f.aoDistance;
+        // what this frame traces: shadows while the sun is up and a shadow mode is on, ambient occlusion when wanted
+        bool shadows = (f.effects & 1) && f.sunDir[3] > 0 && f.mode >= 1 && f.mode <= 3;
+        bool ao = (f.effects & 2) != 0;
+        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) : 0;
         ID3D12DescriptorHeap* heaps[1] = { g_heap };
         g_list->SetDescriptorHeaps(1, heaps);
         g_list->SetComputeRootSignature(g_rootSig);
         g_list->SetComputeRootShaderResourceView(0, g_tlas->GetGPUVirtualAddress());
         g_list->SetComputeRootDescriptorTable(1, Gpu(g_slot));
         g_list->SetComputeRoot32BitConstants(2, 44, &c, 0);
-        if (instances && f.sunDir[3] > 0)
+        if (c.effects)
         {
             g_list->SetPipelineState1(g_rtpso);
             D3D12_DISPATCH_RAYS_DESC d = {};
@@ -485,7 +505,7 @@ static bool Frame(const RtFrame& f)
             d.Width = f.stage == 41 ? 1 : f.width; d.Height = f.stage == 41 ? 1 : f.height; d.Depth = 1;
             if (f.stage != 40) { g_list->DispatchRays(&d); g_dispatches++; }
         }
-        else c.mode = -c.mode;   // no rays this frame: the composite copies the colour through
+
         UavBarrier(g_mask);
         if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 2);
         if (f.stage == 5 || f.stage == 51)

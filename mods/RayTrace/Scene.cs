@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -146,6 +147,29 @@ namespace RayTrace
         }
         private Vector3 _lastCamera;
 
+        /// Testing (bridge): the materials of renderers within `within` m: shader, render queue, and the smoothness and
+        /// metallic values it carries, by count.
+        public static string Materials(float within)
+        {
+            var cam = Current?._lastCamera ?? Vector3.zero;
+            var seen = new SortedDictionary<string, int>();
+            foreach (var rd in UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None))
+            {
+                if ((rd.bounds.center - cam).magnitude > within) continue;
+                foreach (var m in rd.sharedMaterials)
+                {
+                    if (m == null) continue;
+                    string P(string n) => m.HasProperty(n) ? n.TrimStart('_') + " " + m.GetFloat(n).ToString("F2") : null;
+                    var props = string.Join(",", new[] { P("_Glossiness"), P("_Smoothness"), P("_Metallic"), P("_GlossMapScale"), P("_Shininess") }.Where(x => x != null));
+                    string key = m.shader.name + " q" + m.renderQueue + " [" + props + "]";
+                    seen.TryGetValue(key, out int n); seen[key] = n + 1;
+                }
+            }
+            var sb = new System.Text.StringBuilder();
+            foreach (var kv in seen) sb.Append(kv.Value).Append("x ").Append(kv.Key).Append(" | ");
+            return sb.ToString();
+        }
+
         /// The renderers are gathered again every RefreshSeconds: FindObjectsOfType once, then RefreshSlice of them sorted
         /// per frame into the next list, which replaces the current one when it is complete. An entry whose renderer
         /// still shows the same mesh is kept (with how long it has held still).
@@ -224,6 +248,9 @@ namespace RayTrace
                 if (mat == null) continue;
                 int queue = mat.renderQueue;
                 if (queue >= 3000 || (SkipCutout && queue >= 2450)) continue;   // transparent, cut-out
+                // impostors (Amplify Impostors): flat quads that show a picture of a tree or a rock far away; as geometry
+                // they cast rectangles (2026-11-27: rectangles around trees in Volkan's screenshots)
+                if (mat.shader != null && mat.shader.name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 e.Submeshes.Add(((uint)sm.indexStart, (uint)sm.indexCount, (uint)Math.Max(0, sm.baseVertex), i));
             }
             return e.Submeshes.Count > 0 ? e : null;

@@ -40,6 +40,8 @@ namespace RayTrace
             public fixed float SunDir[4];
             public float FadeStart, FadeEnd, Strength, MaxDistance;
             public int NewStructuresPerFrame, FrameIndex, Stage, Submit;
+            public int Effects, AoRays;          // effects: 1 sun shadows, 2 ambient occlusion
+            public float AoRadius, AoStrength, AoDistance;
         }
 
         /// Writes RayTraceNative.dll into TheLongDrive_Data/Plugins/x86_64 (only when it changed): Unity gives a plugin its

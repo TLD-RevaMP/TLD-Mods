@@ -12,8 +12,14 @@ namespace RayTrace
     /// frame behind the main thread.
     internal sealed class Tracer
     {
-        /// 0 off, 1 shadows beyond the game's own (from ShadowDistance on), 2 shadows everywhere, 3 the shadow mask
+        /// Sun shadows: 0 off, 1 beyond the game's own (from ShadowDistance on), 2 everywhere, 3 the shadow mask; 4 shows
+        /// the ambient occlusion alone
         public static int Mode = 1;
+        /// Ray traced ambient occlusion: AoRays short rays (AoRadius m) per pixel within AoDistance m; AoStrength 1 darkens a
+        /// closed-in pixel fully
+        public static bool Ao = true;
+        public static int AoRays = 4;
+        public static float AoRadius = 1.5f, AoStrength = 0.85f, AoDistance = 80f;
         public static float Strength = 0.55f, MaxDistance = 2000f;
         public static int NewStructuresPerFrame = 48;
         /// testing: 1 only the copies, 2 + the native event, 3 + the structures, 4 + the rays, 5 everything; 50 all but the
@@ -86,7 +92,7 @@ namespace RayTrace
         private unsafe void Record(Camera cam)
         {
             _cb.Clear();
-            if (Mode == 0) return;
+            if (Mode == 0 && !Ao) return;
             int w = cam.pixelWidth, h = cam.pixelHeight;
             var colorFormat = cam.allowHDR ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
             // random-write textures all three: vkd3d-proton keeps them in one layout, so the native side needs no
@@ -112,6 +118,7 @@ namespace RayTrace
             f->FadeStart = shadowDistance * 0.75f; f->FadeEnd = shadowDistance;
             f->Strength = Strength; f->MaxDistance = MaxDistance;
             f->NewStructuresPerFrame = NewStructuresPerFrame; f->FrameIndex = ++_frameIndex; f->Stage = Stage; f->Submit = Submit;
+            f->Effects = 1 | (Ao ? 2 : 0); f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
 
             _cb.Blit(BuiltinRenderTextureType.Depth, _depth);
             _cb.Blit(BuiltinRenderTextureType.CameraTarget, _in);

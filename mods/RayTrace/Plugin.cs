@@ -20,14 +20,19 @@ namespace RayTrace
         internal static ConfigEntry<int> ModeCfg;
         internal static ConfigEntry<float> StrengthCfg;
         internal static ConfigEntry<KeyboardShortcut> CycleKey;
-        internal static readonly string[] ModeNames = { "off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)" };
+        internal static ConfigEntry<bool> AoCfg;
+        internal static ConfigEntry<KeyboardShortcut> AoKey;
+        internal static readonly string[] ModeNames = { "shadows off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)", "ambient occlusion alone (testing)" };
 
         private void Awake()
         {
             Instance = this; _log = Logger;
-            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("0 off, 1 shadows beyond the game's own shadow distance, 2 shadows everywhere, 3 the shadow mask", new AcceptableValueRange<int>(0, 3)));
+            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("Sun shadows: 0 off, 1 beyond the game's own shadow distance, 2 everywhere, 3 the shadow mask, 4 the ambient occlusion alone", new AcceptableValueRange<int>(0, 4)));
             StrengthCfg = Config.Bind("RayTrace", "Strength", 0.55f, new ConfigDescription("How much of a pixel's light the sun is: a shadowed pixel keeps 1 - this", new AcceptableValueRange<float>(0f, 1f)));
-            CycleKey = Config.Bind("Keys", "CycleMode", new KeyboardShortcut(KeyCode.F7, KeyCode.LeftControl), "Switches between the modes in game");
+            CycleKey = Config.Bind("Keys", "CycleMode", new KeyboardShortcut(KeyCode.F7, KeyCode.LeftControl), "Switches between the shadow modes in game");
+            AoCfg = Config.Bind("RayTrace", "AmbientOcclusion", true, "Ray traced ambient occlusion: corners, the ground under cars and where things touch darken");
+            AoKey = Config.Bind("Keys", "ToggleAmbientOcclusion", new KeyboardShortcut(KeyCode.F6, KeyCode.LeftControl), "Turns the ray traced ambient occlusion on or off in game");
+            Tracer.Ao = AoCfg.Value;
             Tracer.Mode = ModeCfg.Value; Tracer.Strength = StrengthCfg.Value;
             StrengthCfg.SettingChanged += (_, __) => Tracer.Strength = StrengthCfg.Value;
             try { Status = Native.Install(); }
@@ -67,9 +72,14 @@ namespace RayTrace
             Bench.Frame(Time.unscaledDeltaTime);
             if (Plugin.CycleKey != null && Plugin.CycleKey.Value.IsDown())
             {
-                Tracer.Mode = (Tracer.Mode + 1) % 4;
+                Tracer.Mode = (Tracer.Mode + 1) % 5;
                 Plugin.ModeCfg.Value = Tracer.Mode;
                 _toast = "RayTrace: " + Plugin.ModeNames[Tracer.Mode]; _toastUntil = Time.unscaledTime + 2.5f;
+            }
+            if (Plugin.AoKey != null && Plugin.AoKey.Value.IsDown())
+            {
+                Tracer.Ao = !Tracer.Ao; Plugin.AoCfg.Value = Tracer.Ao;
+                _toast = "RayTrace: ambient occlusion " + (Tracer.Ao ? "on" : "off"); _toastUntil = Time.unscaledTime + 2.5f;
             }
             D3D12Fixes.Tick();
             if (_off || !Native.Installed) return;
