@@ -20,6 +20,21 @@ float AoBlurred(int2 px, float depth)
     return weight > 0 ? sum / weight : 1;
 }
 
+// the shadow mask over its depth neighbours: the sun-disk rays' fixed noise averaged into soft edges
+float MaskBlurred(int2 px, float depth)
+{
+    float sum = 0, weight = 0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++)
+        {
+            int2 q = clamp(px + int2(x, y), int2(0, 0), int2(size.xy) - 1);
+            float d = Depth.Load(int3(q, 0));
+            float w = exp(-abs(d - depth) / (depth * 0.01 + 1e-7)) * (1.0 / (1 + x * x + y * y));
+            sum += Mask[q] * w; weight += w;
+        }
+    return weight > 0 ? sum / weight : 0;
+}
+
 float3 GiBlurred(int2 px, float depth)
 {
     float3 sum = 0; float weight = 0;
@@ -40,13 +55,21 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= (uint2)size.xy)) return;
     float4 col = ColorIn.Load(int3(id.xy, 0));
     float depth = Depth.Load(int3(id.xy, 0));
+    if (effects & EffectMaskPass)
+    {
+        // Unity's screen-space sun shadow mask (1 lit; a shadow keeps 1 - the light's shadow strength): ours joins it,
+        // and the game's own lighting takes the sun away where either is in shadow
+        float traced = (effects & EffectShadows) && depth > 0 ? MaskBlurred(id.xy, depth) : 0;
+        ColorOut[id.xy] = min(col.r, 1 - strength * traced).xxxx;
+        return;
+    }
     if (depth <= 0) { ColorOut[id.xy] = mode == 3 || mode == 4 ? float4(0.4, 0.6, 1, 1) : col; return; }
     float dist = distance(WorldPos(id.xy, depth), cameraPos.xyz);
     float ao = (effects & EffectAo) ? AoBlurred(id.xy, depth) : 1;
-    float shadow = (effects & EffectShadows) ? Mask[id.xy] : 0;
+    float shadow = (effects & (EffectShadows | EffectMaskReady)) ? Mask[id.xy] : 0;
     if (mode == 3) { ColorOut[id.xy] = float4((1 - shadow).xxx, 1); return; }
     if (mode == 4) { ColorOut[id.xy] = float4(ao.xxx, 1); return; }
-    if (mode == 1 || mode == 2)
+    if ((effects & EffectShadows) && (mode == 1 || mode == 2))   // no mask pass (the sun has no shadows): darken the frame
     {
         float weight = mode == 1 ? saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3)) : 1;
         col.rgb *= 1 - strength * shadow * weight;

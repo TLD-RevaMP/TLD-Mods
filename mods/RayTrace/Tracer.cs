@@ -12,22 +12,26 @@ namespace RayTrace
     /// frame behind the main thread.
     internal sealed class Tracer
     {
-        /// Sun shadows: 0 off, 1 beyond the game's own (from ShadowDistance on), 2 everywhere, 3 the shadow mask; 4 shows
-        /// the ambient occlusion alone
+        /// Sun shadows: 0 the game's own only; 1 ray traced, into the game's own sun shadow mask (the game's shadow map
+        /// keeps only what the rays can't see: leaves, glass, characters); 2 ray traced joined with all the game's own;
+        /// 3 the shadow mask; 4 to 7 the other effects alone (testing)
         public static int Mode = 1;
+        /// The sun disk's angular radius (degrees) the shadow rays aim at: sharp where a shadow meets its caster, softer
+        /// further from it. The real sun's is 0.27.
+        public static float SunSize = 0.6f;
         /// Ray traced ambient occlusion: AoRays short rays (AoRadius m) per pixel within AoDistance m; AoStrength 1 darkens a
         /// closed-in pixel fully
         public static bool Ao = true;
         /// Ray traced reflections (on surfaces whose smoothness times Scene.Shine is over 0.2, and on glass and water)
         public static bool Refl = true;
-        public static float ReflStrength = 0.6f;
+        public static float ReflStrength = 0.8f;
         /// Ray traced bounced light: GiRays rays (GiRadius m) per pixel within GiDistance m; what nearby surfaces bounce onto
         /// a surface tints and brightens it (the sky's light is the game's own ambient already)
         public static bool Gi = true;
         public static int GiRays = 2;
-        public static float GiRadius = 8f, GiStrength = 1f, GiDistance = 60f;
+        public static float GiRadius = 8f, GiStrength = 1.5f, GiDistance = 60f;
         public static int AoRays = 4;
-        public static float AoRadius = 1.5f, AoStrength = 0.85f, AoDistance = 80f;
+        public static float AoRadius = 2.5f, AoStrength = 1f, AoDistance = 80f;
         public static float Strength = 0.55f, MaxDistance = 2000f;
         public static int NewStructuresPerFrame = 48;
         /// testing: 1 only the copies, 2 + the native event, 3 + the structures, 4 + the rays, 5 everything; 50 all but the
@@ -44,6 +48,19 @@ namespace RayTrace
         private CommandBuffer _cb;
         private RenderTexture _depth, _in, _out;
         private readonly IntPtr[] _frames = new IntPtr[Ring];
+        // the sun's pass: the camera's depth copied after its depth texture, then (at the sun's screen-space shadow mask)
+        // the mask copied in, the shadow rays joined into it, and the result copied back
+        private CommandBuffer _depthCb, _lightCb;
+        private RenderTexture _maskDepth, _maskIn, _maskOut;
+        private readonly IntPtr[] _maskFrames = new IntPtr[Ring];
+        private Light _lightWithCb;
+        private bool _maskPass;
+        /// testing: whether this frame asked for the sun's pass
+        public static bool MaskPass;
+        /// testing: 0 the sun's pass; 1 only the mask copied out and back; 2 no copy back; 3 the copy back alone
+        public static int MaskTest;
+        private bool _rendering;
+        private GameObject _keeper;
         private IntPtr[] _geometries = new IntPtr[Ring];
         private int _slot, _frameIndex;
         private IntPtr _event;
@@ -59,6 +76,7 @@ namespace RayTrace
                 Native.LoadShaders();
                 _event = Native.RT_RenderEventFunc();
                 for (int i = 0; i < Ring; i++) _frames[i] = Marshal.AllocHGlobal(Marshal.SizeOf<Native.Frame>());
+                for (int i = 0; i < Ring; i++) _maskFrames[i] = Marshal.AllocHGlobal(Marshal.SizeOf<Native.Frame>());
                 _shaders = true;
             }
             var player = mainscript.s != null ? mainscript.s.player : null;
@@ -69,23 +87,76 @@ namespace RayTrace
         private void Attach(Camera cam)
         {
             if (_cam != null && _cb != null) _cam.RemoveCommandBuffer(CameraEvent.BeforeImageEffectsOpaque, _cb);
+            if (_cam != null && _depthCb != null) _cam.RemoveCommandBuffer(CameraEvent.AfterDepthTexture, _depthCb);
+            Camera.onPreCull -= OnPreCull;
             Camera.onPreRender -= OnPreRender;
+            Camera.onPostRender -= OnPostRender;
+            SunBuffer(null);
             _cam = cam;
             if (cam == null) { Info = "no camera"; return; }
             OriginalDepthMode = cam.depthTextureMode.ToString();
             cam.depthTextureMode |= DepthTextureMode.Depth;
             _cb ??= new CommandBuffer { name = "RayTrace" };
             cam.AddCommandBuffer(CameraEvent.BeforeImageEffectsOpaque, _cb);
+            _depthCb ??= new CommandBuffer { name = "RayTrace depth" };
+            _lightCb ??= new CommandBuffer { name = "RayTrace sun shadows" };
+            cam.AddCommandBuffer(CameraEvent.AfterDepthTexture, _depthCb);
+            Camera.onPreCull += OnPreCull;
             Camera.onPreRender += OnPreRender;
+            Camera.onPostRender += OnPostRender;
             Info = "on " + cam.name;
+        }
+
+        // The sun's command buffer runs for every camera that renders with the sun (the cars' mirrors, which render while
+        // the player's camera culls): it is on the sun from this camera's culling to the end of its render, and off while
+        // any other camera renders. Added later than the culling, it does not run in that frame (2026-11-27).
+        private void OnPreCull(Camera cam)
+        {
+            if (cam != _cam) return;
+            _rendering = true;
+            SunBuffer(Sun());
+        }
+
+        private void SunBuffer(Light sun)
+        {
+            if (sun == _lightWithCb || _lightCb == null) return;
+            if (_lightWithCb != null) _lightWithCb.RemoveCommandBuffer(LightEvent.AfterScreenspaceMask, _lightCb);
+            _lightWithCb = sun;
+            if (sun != null) sun.AddCommandBuffer(LightEvent.AfterScreenspaceMask, _lightCb);
         }
 
         private void OnPreRender(Camera cam)
         {
-            if (cam != _cam || _cb == null) return;
+            if (cam != _cam) { SunBuffer(null); return; }
+            if (_cb == null) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try { Record(cam); Bench.Record(sw.Elapsed.TotalMilliseconds); }
-            catch (Exception e) { Info = "record failed: " + e.GetType().Name + " " + e.Message; _cb.Clear(); }
+            catch (Exception e) { Info = "record failed: " + e.GetType().Name + " " + e.Message; _cb.Clear(); _depthCb?.Clear(); _lightCb?.Clear(); _maskPass = false; }
+        }
+
+        private void OnPostRender(Camera cam)
+        {
+            if (cam == _cam) { _rendering = false; SunBuffer(null); }
+            else if (_rendering) SunBuffer(Sun());   // a camera that rendered within this one's culling
+        }
+
+        /// Unity draws a light's screen-space shadow mask only when something casts into its shadow map: with the traced
+        /// renderers' shadows taken, a millimetre cube in front of the camera, casting shadows only, keeps it drawn.
+        private void Keep(Camera cam, bool on)
+        {
+            if (!on) { if (_keeper != null) _keeper.SetActive(false); return; }
+            if (_keeper == null)
+            {
+                _keeper = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                _keeper.name = "RayTrace shadow keeper";
+                UnityEngine.Object.Destroy(_keeper.GetComponent<Collider>());
+                UnityEngine.Object.DontDestroyOnLoad(_keeper);
+                var r = _keeper.GetComponent<MeshRenderer>();
+                r.shadowCastingMode = ShadowCastingMode.ShadowsOnly; r.receiveShadows = false;
+                _keeper.transform.localScale = Vector3.one * 0.001f;
+            }
+            _keeper.SetActive(true);
+            _keeper.transform.position = cam.transform.position + cam.transform.forward * 1.5f;
         }
 
         private static RenderTexture Target(RenderTexture rt, int w, int h, RenderTextureFormat format, bool uav)
@@ -111,6 +182,14 @@ namespace RayTrace
 
             var f = (Native.Frame*)_frames[_slot];
             var camPos = cam.transform.position;
+            var sun = Sun();
+            var toSun = sun != null ? -sun.transform.forward : Vector3.up;
+            bool up = sun != null && sun.isActiveAndEnabled && sun.intensity > 0.05f && toSun.y > 0.01f;
+            // the shadows go into the game's own lighting when its sun has shadows; else (mode 1 and 2 alike) they darken
+            // the frame beyond the game's shadow distance
+            _maskPass = (Mode == 1 || Mode == 2 || Mode == 3) && up && sun.shadows != LightShadows.None && QualitySettings.shadows != ShadowQuality.Disable && Stage == 5;
+            Scene.TakeShadows = _maskPass && Mode == 1; MaskPass = _maskPass;
+            Keep(cam, Scene.TakeShadows);
             Scene.CullingMask = cam.cullingMask;
             f->GeometryCount = Geometries = _scene.Write(camPos, out var geometries, ref _geometries, _slot, _frameIndex);
             f->Geometries = geometries;
@@ -125,9 +204,7 @@ namespace RayTrace
             Put(f->SkyGround, RenderSettings.ambientGroundColor.linear);
             f->ReflStrength = ReflStrength;
             f->CameraPos[0] = camPos.x; f->CameraPos[1] = camPos.y; f->CameraPos[2] = camPos.z; f->CameraPos[3] = 1;
-            var sun = Sun();
-            var toSun = sun != null ? -sun.transform.forward : Vector3.up;
-            bool up = sun != null && sun.isActiveAndEnabled && sun.intensity > 0.05f && toSun.y > 0.01f;
+            f->SunRadius = Mathf.Tan(SunSize * Mathf.Deg2Rad);
             f->SunDir[0] = toSun.x; f->SunDir[1] = toSun.y; f->SunDir[2] = toSun.z; f->SunDir[3] = up ? 1 : 0;
             float shadowDistance = QualitySettings.shadowDistance;
             f->FadeStart = shadowDistance * 0.75f; f->FadeEnd = shadowDistance;
@@ -137,6 +214,23 @@ namespace RayTrace
             f->Effects = 1 | (Ao ? 2 : 0) | (Refl ? 4 : 0) | (Gi ? 8 : 0);
             f->GiRays = GiRays; f->GiRadius = GiRadius; f->GiStrength = GiStrength; f->GiDistance = GiDistance; f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
 
+            _depthCb.Clear(); _lightCb.Clear();
+            if (_maskPass)
+            {
+                _maskDepth = Target(_maskDepth, w, h, RenderTextureFormat.RFloat, true);
+                // Unity's screen-space shadow mask is RGBA8 (CopyTexture copies within a format group only: R8 was refused)
+                _maskIn = Target(_maskIn, w, h, RenderTextureFormat.ARGB32, true);
+                _maskOut = Target(_maskOut, w, h, RenderTextureFormat.ARGB32, true);
+                var m = (Native.Frame*)_maskFrames[_slot];
+                *m = *f;
+                m->Depth = _maskDepth.GetNativeTexturePtr(); m->ColorIn = _maskIn.GetNativeTexturePtr(); m->ColorOut = _maskOut.GetNativeTexturePtr();
+                m->Effects = 1 | 16; m->Strength = sun.shadowStrength;
+                f->Effects = (f->Effects & ~1) | 32;   // the frame's pass: no shadow rays again, the mask has them
+                _depthCb.Blit(BuiltinRenderTextureType.Depth, _maskDepth);
+                if (MaskTest != 3) _lightCb.CopyTexture(BuiltinRenderTextureType.CurrentActive, _maskIn);
+                if (MaskTest != 1) _lightCb.IssuePluginEventAndData(_event, Native.EventFrame, (IntPtr)m);
+                if (MaskTest != 2) _lightCb.Blit(MaskTest == 1 ? _maskIn : _maskOut, BuiltinRenderTextureType.CurrentActive);
+            }
             _cb.Blit(BuiltinRenderTextureType.Depth, _depth);
             _cb.Blit(BuiltinRenderTextureType.CameraTarget, _in);
             if (Stage >= 2 && Stage != 52) _cb.IssuePluginEventAndData(_event, Submit == 1 ? 2 : Native.EventFrame, (IntPtr)f);

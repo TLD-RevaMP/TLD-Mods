@@ -26,6 +26,12 @@ namespace RayTrace
         /// The layers the player's camera draws: meshes on other layers only cast the game's shadows (the house's ramp has
         /// an Unlit/Color collider mesh over its planks: the bounced-light rays lit the ramp with its own colour)
         public static int CullingMask = ~0;
+        /// The ray traced shadows replace the game's (Tracer mode 1): a traced renderer whose submeshes are all traced as
+        /// opaque stops casting into the game's shadow map (put back when this is off, or when it leaves the scene). The
+        /// game's map keeps what the rays can't see: cut-out leaves, glass, animated characters.
+        public static bool TakeShadows;
+        private readonly Dictionary<Renderer, ShadowCastingMode> _taken = new Dictionary<Renderer, ShadowCastingMode>();
+        public int Taken => _taken.Count;
         /// Frames a mesh's GPU buffers and vertex count must stay the same before the rays see it.
         public static int StableFrames = 30;
         /// A settled mesh's buffers are looked up again every this many frames (staggered across the meshes): looking up
@@ -41,8 +47,8 @@ namespace RayTrace
             public float smoothness, metallic; public Color albedo; public bool seeThrough;
         }
 
-        /// Shine: a material's smoothness times this. Reflections are added from smoothness 0.7 (Unity already reflects in
-        /// glossy materials itself): at 1 only glass, water and polished materials get them; more makes paint a mirror too.
+        /// Shine: a material's smoothness times this. Reflections are added from smoothness 0.55, fully from 0.7 (Unity
+        /// already reflects in glossy materials itself, blurred): at 1 glass, water, car paint and chrome get them.
         public static float Shine = 1f;
 
         private sealed class Entry
@@ -57,6 +63,9 @@ namespace RayTrace
             public ulong KeyBase;
             public Vector3 Center;          // where its bounds were at the refresh
             public bool Shown;              // enabled and active, as last read
+            public bool AllOpaque;          // every triangle submesh traced as opaque (none cut out, glass or left out)
+            public bool ShadowOnly;         // ShadowCastingMode.ShadowsOnly: unseen, only the shadow rays hit it
+            public bool Taken;              // its shadow is ours (TakeShadows)
             public Matrix4x4 Matrix;        // its transform, as last read
             public uint VertexOffset, VertexStride, VertexCount, VertexFormat, Index32;
             public int NormalStream = -1;
@@ -82,6 +91,7 @@ namespace RayTrace
         {
             for (int i = _retired.Count - 1; i >= 0; i--)
                 if (frame - _retired[i].frame > 16) { Marshal.FreeHGlobal(_retired[i].block); _retired.RemoveAt(i); }
+            if (!TakeShadows && _taken.Count > 0) GiveShadowsBack(null);
             Refresh(camera);
             int need = 0;
             foreach (var e in _entries) need += e.Submeshes.Count;
@@ -117,7 +127,7 @@ namespace RayTrace
                     {
                         var again = e.Filter.sharedMesh != null ? Describe(rd, e.Filter.sharedMesh) : null;
                         if (again == null) { e.Mesh = null; continue; }
-                        again.Ground = e.Ground; again.Filter = e.Filter; again.StableSince = frame; _entries[k] = e = again;
+                        again.Ground = e.Ground; again.Filter = e.Filter; again.StableSince = frame; again.ShadowOnly = e.ShadowOnly; _entries[k] = e = again;
                     }
                     IntPtr vb = e.Mesh.GetNativeVertexBufferPtr(e.Stream), ib = e.Mesh.GetNativeIndexBufferPtr();
                     e.NormalBuffer = e.NormalStream < 0 ? IntPtr.Zero : e.NormalStream == e.Stream ? vb : e.Mesh.GetNativeVertexBufferPtr(e.NormalStream);
@@ -127,6 +137,11 @@ namespace RayTrace
                 // a mesh the game is still building (its terrain while it loads) waits until it has held still
                 if (frame - e.StableSince < StableFrames) continue;
                 if (n + e.Submeshes.Count > _capacity) break;
+                if (TakeShadows && !e.Taken && e.AllOpaque && !e.Ground && rd != null)
+                {
+                    e.Taken = true;
+                    if (!_taken.ContainsKey(rd) && rd.shadowCastingMode != ShadowCastingMode.Off) { _taken[rd] = rd.shadowCastingMode; rd.shadowCastingMode = ShadowCastingMode.Off; }
+                }
                 var m = e.Matrix;
                 foreach (var s in e.Submeshes)
                 {
@@ -138,7 +153,7 @@ namespace RayTrace
                     d.Key = e.KeyBase | (uint)s.sub;
                     d.VertexOffset = e.VertexOffset + s.baseVertex * e.VertexStride;
                     d.VertexStride = e.VertexStride; d.VertexCount = e.VertexCount - s.baseVertex; d.VertexFormat = e.VertexFormat;
-                    d.IndexStart = s.start; d.IndexCount = s.count; d.Index32 = e.Index32; d.Flags = s.seeThrough ? 1u : 0u;
+                    d.IndexStart = s.start; d.IndexCount = s.count; d.Index32 = e.Index32; d.Flags = s.seeThrough ? 1u : e.ShadowOnly ? 2u : 0u;
                     d.NormalBuffer = e.NormalBuffer; d.NormalOffset = e.NormalOffset + s.baseVertex * e.NormalStride; d.NormalStride = e.NormalStride;
                     d.NormalFormat = e.NormalBuffer == IntPtr.Zero ? 0 : e.NormalFormat; d.Pad2 = 0;
                     d.Smoothness = Mathf.Clamp01(s.smoothness * Shine); d.Metallic = s.metallic;
@@ -167,6 +182,25 @@ namespace RayTrace
             return sb.ToString();
         }
         private Vector3 _lastCamera;
+
+        /// Testing (bridge): the traced submeshes within `within` m whose smoothness (times Shine) is over `over`.
+        public static string Shiny(float within, float over)
+        {
+            var cam = Current?._lastCamera ?? Vector3.zero;
+            var sb = new System.Text.StringBuilder();
+            foreach (var e in Current?._entries ?? new List<Entry>())
+            {
+                if (e.Renderer == null || (e.Renderer.bounds.ClosestPoint(cam) - cam).magnitude > within) continue;
+                foreach (var s in e.Submeshes)
+                    if (s.smoothness * Shine > over)
+                    {
+                        var mats = e.Renderer.sharedMaterials;
+                        var m = s.sub < mats.Length ? mats[s.sub] : null;
+                        sb.Append($"{e.Renderer.transform.root.name}/{e.Renderer.name}#{s.sub} {(m != null ? m.name : "-")} s {s.smoothness:F2} see {s.seeThrough} | ");
+                    }
+            }
+            return sb.ToString();
+        }
 
         /// Testing (bridge): every traced mesh within `within` m of the camera: name, shadow mode, its LOD group's level
         /// (or -), whether it shows, and its height range.
@@ -243,7 +277,8 @@ namespace RayTrace
                 if (rd == null || !rd.enabled || rd.isPartOfStaticBatch || (CullingMask & (1 << rd.gameObject.layer)) == 0) continue;
                 var b = rd.bounds;
                 bool ground = b.size.x >= GroundSize || b.size.z >= GroundSize;
-                if (rd.shadowCastingMode == ShadowCastingMode.Off && !ground) continue;
+                var cast = _taken.TryGetValue(rd, out var was) ? was : rd.shadowCastingMode;
+                if (cast == ShadowCastingMode.Off && !ground) continue;
                 if (ground && !IncludeGround) continue;
                 float reach = ground ? r * 2 : r;
                 if (b.size.sqrMagnitude < MinSize * MinSize || (b.center - camera).sqrMagnitude > (reach + b.extents.magnitude) * (reach + b.extents.magnitude)) continue;
@@ -255,18 +290,38 @@ namespace RayTrace
                 if (mesh == null || mesh.vertexCount == 0) continue;
                 if (_previous.TryGetValue(rd, out var kept) && kept.Mesh == mesh && kept.VertexCount == (uint)mesh.vertexCount) { kept.Center = b.center; _next.Add(kept); continue; }
                 var e = Describe(rd, mesh);
-                if (e != null) { e.Ground = ground; e.Filter = mf; e.Center = b.center; _next.Add(e); } else _skipping++;
+                if (e != null) { e.Ground = ground; e.Filter = mf; e.Center = b.center; e.ShadowOnly = cast == ShadowCastingMode.ShadowsOnly; _next.Add(e); } else _skipping++;
             }
             if (_pendingAt >= _pending.Length)
             {
                 (_entries, _next) = (_next, _entries);
                 _next.Clear(); _pending = null; _previous.Clear();
+                if (_taken.Count > 0) GiveShadowsBack(_entries);
                 Gathered = _entries.Count; Skipped = _skipping;
             }
             RefreshMs = (Time.realtimeSinceStartup - t0) * 1000f;
             Bench.Refresh(RefreshMs);
         }
         private int _skipping;
+
+        /// Puts the game's shadows back: all of them (keep null), or those of renderers no longer in `keep`.
+        private void GiveShadowsBack(List<Entry> keep)
+        {
+            HashSet<Renderer> kept = null;
+            if (keep != null) { kept = new HashSet<Renderer>(); foreach (var e in keep) if (e.Taken && e.Renderer != null) kept.Add(e.Renderer); }
+            var back = new List<Renderer>();
+            foreach (var kv in _taken)
+            {
+                if (kv.Key == null) { back.Add(kv.Key); continue; }
+                if (kept != null && kept.Contains(kv.Key)) continue;
+                kv.Key.shadowCastingMode = kv.Value; back.Add(kv.Key);
+            }
+            foreach (var r in back) _taken.Remove(r);
+            if (keep == null) foreach (var e in _entries) e.Taken = false;
+        }
+
+        /// The game's shadows back (the mod is going away).
+        public void Restore() { if (_taken.Count > 0) GiveShadowsBack(null); }
 
         /// A Standard material with a metallic-gloss map (or smoothness in its albedo's alpha) takes its smoothness from that
         /// texture times _GlossMapScale and ignores _Glossiness (the bus's paint: _Glossiness 1, a mirror, 2026-11-27). The
@@ -318,18 +373,20 @@ namespace RayTrace
                 }
             }
             var mats = rd.sharedMaterials;
+            e.AllOpaque = true;
             for (int i = 0; i < mesh.subMeshCount; i++)
             {
                 var sm = mesh.GetSubMesh(i);
                 if (sm.topology != MeshTopology.Triangles || sm.indexCount < 3) continue;
                 var mat = i < mats.Length ? mats[i] : null;
-                if (mat == null) continue;
+                if (mat == null) { e.AllOpaque = false; continue; }
                 int queue = mat.renderQueue;
                 bool seeThrough = queue >= 3000;   // glass, water: reflections only (the shadow and occlusion rays pass them)
-                if (SkipCutout && queue >= 2450 && !seeThrough) continue;   // cut-out (leaves: the rays see triangles, not the texture)
+                if (seeThrough) e.AllOpaque = false;
+                if (SkipCutout && queue >= 2450 && !seeThrough) { e.AllOpaque = false; continue; }   // cut-out (leaves: the rays see triangles, not the texture)
                 // impostors (Amplify Impostors): flat quads that show a picture of a tree or a rock far away; as geometry
                 // they cast rectangles (2026-11-27: rectangles around trees in Volkan's screenshots)
-                if (mat.shader != null && mat.shader.name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (mat.shader != null && mat.shader.name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0) { e.AllOpaque = false; continue; }
                 float smooth = Smoothness(mat, seeThrough), metal = Metallic(mat);
                 if (seeThrough) smooth = Mathf.Max(smooth, 0.95f / Mathf.Max(Shine, 1f));   // glass and water are smooth whatever the shader says
                 e.Submeshes.Add(new Sub

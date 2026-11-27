@@ -8,7 +8,7 @@ struct InstanceInfo { uint triOffset, flags; float smoothness, metallic; float3 
 StructuredBuffer<InstanceInfo> Instances : register(t4);
 ByteAddressBuffer TriNormals : register(t5);
 struct Payload { float t; uint inst; float3 n; };   // t < 0: nothing hit
-static const uint MaskSolid = 1, MaskSeeThrough = 2, NoNormals = 0xFFFFFFFF;
+static const uint MaskSolid = 1, MaskSeeThrough = 2, MaskShadowOnly = 4, NoNormals = 0xFFFFFFFF;
 
 // a fixed number per pixel (no change from frame to frame: noise that holds still, which the composite's blur hides)
 float Hash(uint2 p, uint k)
@@ -22,7 +22,7 @@ bool Blocked(float3 origin, float3 dir, float tMax)
 {
     RayDesc r; r.Origin = origin; r.Direction = dir; r.TMin = 0; r.TMax = tMax;
     Payload pl; pl.t = 0; pl.inst = 0; pl.n = 0;
-    TraceRay(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_FORCE_OPAQUE, MaskSolid, 0, 1, 0, r, pl);
+    TraceRay(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_FORCE_OPAQUE, MaskSolid | MaskShadowOnly, 0, 1, 0, r, pl);
     return pl.t >= 0;
 }
 
@@ -109,7 +109,18 @@ void Gen()
     float bias = 0.03 + dist * 0.004;
 
     if (effects & EffectShadows)
-        Mask[px] = Blocked(p + view * bias + sunDir.xyz * bias, sunDir.xyz, maxDistance) ? 1 : 0;
+    {
+        // toward a point on the sun's disk (a fixed one per pixel, the composite's blur averages them): the shadow is
+        // sharp where it meets its caster and softer further from it
+        float3 d = sunDir.xyz;
+        if (sunRadius > 0)
+        {
+            float3 t = normalize(abs(d.y) < 0.99 ? cross(d, float3(0, 1, 0)) : cross(d, float3(1, 0, 0)));
+            float a = Hash(px, 31) * 6.2831853, r = sqrt(Hash(px, 37)) * sunRadius;
+            d = normalize(d + (t * cos(a) + cross(d, t) * sin(a)) * r);
+        }
+        Mask[px] = Blocked(p + view * bias + d * bias, d, maxDistance) ? 1 : 0;
+    }
 
     if (effects & EffectAo)
     {
@@ -172,7 +183,11 @@ void Gen()
         if (s.t >= 0)
         {
             InstanceInfo m = Instances[s.inst];
-            if (m.smoothness > 0.7)
+            // a sharp mirror ray from smoothness 0.55 (the game's car paint and chrome are 0.6, its default 0.5) on metals,
+            // paint (metallic 0.4) and glass; from 0.8 on other materials (the game gives some stone 0.7: a stone well
+            // turned to glazed chrome)
+            float from = (m.flags & 1) ? 0.55 : lerp(0.8, 0.55, saturate((m.metallic - 0.1) / 0.3));
+            if (m.smoothness > from)
             {
                 float3 sp = cameraPos.xyz - view * s.t;
                 float3 n = any(s.n != 0) ? s.n : NormalAt(px, p);
@@ -183,10 +198,9 @@ void Gen()
                 float3 f0 = lerp(0.04, m.albedo, m.metallic);
                 float3 fr = f0 + (1 - f0) * pow(1 - saturate(dot(n, view)), 5);
                 float amount = max(fr.r, max(fr.g, fr.b));
-                // Unity already gives a glossy material its own reflection (probes, the sky): one sharp mirror ray is added
-                // only where the surface is near a mirror (glass, water, polish), from smoothness 0.7 to fully at 1 (the
-                // bus's paint, 0.75, gets a little)
-                result = float4(col * fr / max(amount, 1e-3), amount * saturate((m.smoothness - 0.7) / 0.3));
+                // Unity already gives a glossy material its own blurry reflection (probes, the sky): the mirror ray is mixed
+                // in from that smoothness, fully 0.15 above it
+                result = float4(col * fr / max(amount, 1e-3), amount * saturate((m.smoothness - from) / 0.15));
             }
         }
         Refl[px] = result;

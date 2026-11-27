@@ -11,6 +11,7 @@ cbuffer Constants : register(b0)
     int mode, frame, effects, aoRays; // effects (this frame): 1 shadows, 2 ambient occlusion, 4 reflections
     float aoRadius, aoStrength, aoDistance, reflStrength;
     float giRadius, giStrength, giDistance; int giRays;
+    float sunRadius;                  // the sun disk's radius (tangent)
 };
 Texture2D<float> Depth : register(t1);
 Texture2D<float4> ColorIn : register(t2);
@@ -20,6 +21,9 @@ RWTexture2D<float4> Refl : register(u3);    // the reflected colour, and how muc
 RWTexture2D<float4> Gi : register(u4);      // light bounced onto the surface by what is near it
 
 static const int EffectShadows = 1, EffectAo = 2, EffectRefl = 4, EffectGi = 8;
+// 16: this pass writes the sun's screen-space shadow mask (ColorIn/ColorOut are Unity's mask); 32: Mask holds this
+// frame's shadows from that pass
+static const int EffectMaskPass = 16, EffectMaskReady = 32;
 
 // Unity's reversed depth on D3D: 1 at the near plane, 0 at the far one (the sky)
 float3 WorldPos(uint2 px, float depth)

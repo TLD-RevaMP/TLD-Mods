@@ -50,6 +50,7 @@ namespace RayTrace
             public float ReflStrength;
             public int GiRays;
             public float GiRadius, GiStrength, GiDistance;
+            public float SunRadius;
         }
 
         /// Writes RayTraceNative.dll into TheLongDrive_Data/Plugins/x86_64 (only when it changed): Unity gives a plugin its

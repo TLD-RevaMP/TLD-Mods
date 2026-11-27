@@ -5,36 +5,39 @@ native D3D12 plugin of its own; no Unity editor is involved: the shaders are HLS
 
 ## What it does
 
-Every frame, after the opaque geometry and before the post-processing:
+Every frame the meshes near the camera (within 300 m, and the terrain tiles and roads within 600 m) go into ray tracing
+acceleration structures built from the game's own GPU vertex and index buffers, and rays are traced from the points the
+depth buffer shows:
 
-1. the meshes that can cast a shadow within 300 m (and the terrain tiles and roads within 600 m) go into ray tracing
-   acceleration structures built from the game's own GPU vertex and index buffers;
-2. one shadow ray per pixel goes from the point the depth buffer shows toward the sun;
-3. the shadow is applied to the frame. Mode 1 (the default) only beyond the game's own shadows (from 75 to 100 m on,
-   where the game draws none), so distant hills, buildings and cars cast shadows too. Mode 2 everywhere, mode 3 shows
-   the shadow mask itself.
-
-Besides the shadows:
-
-- **Ambient occlusion** (Ctrl+F6): four short rays per pixel darken corners, the ground under cars and where things
-  touch, within 80 m. It stands in for the game's own, which has no shaders on Direct3D 12.
+- **Sun shadows** (mode 1, the default): one shadow ray per pixel toward a point on the sun's disk (`SunSize`, 0.6
+  degrees: sharp where a shadow meets its caster, softer further from it), averaged over the pixel's neighbours. They go
+  into the game's own sun shadow mask (Unity's screen-space shadow mask, right after the game draws it), so the game's
+  lighting takes the sun away there and keeps its ambient light. The meshes the rays see stop casting into the game's
+  shadow map; it keeps only what the rays can't see: cut-out leaves, glass, animated characters. Beyond the game's shadow
+  distance (100 m) the shadows are the rays' alone. Mode 2 joins the ray traced shadows with all of the game's own, mode
+  0 leaves the game's alone, mode 3 shows the mask.
+- **Ambient occlusion** (Ctrl+F6): four rays per pixel, 2.5 m long, darken corners, the ground under cars and where
+  things touch, within 80 m. It stands in for the game's own, which has no shaders on Direct3D 12.
 - **Reflections** (Ctrl+F5): a primary ray finds each pixel's surface (glass and water in front of it too), its material
-  and its exact normal (each mesh's normals are read once from the game's own buffers); where the material is near a
-  mirror (smoothness over 0.7: glass, water, and the game's glossy paint, which it sets to 1 on the buses), a mirror ray
-  finds what it reflects. Its colour comes from the frame where that point is on screen, else from the material's tint
-  lit by sun and sky, else the sky. `ReflectionStrength` (0.6) and `Shine` (smoothness times this) tune it.
+  and its exact normal (each mesh's normals are read once from the game's own buffers). On metal, car paint, chrome and
+  glass from smoothness 0.55 (fully from 0.7), and on other materials from 0.8, a mirror ray finds what the surface
+  reflects: its colour from the frame where that point is on screen, else from the material's tint lit by sun and sky,
+  else the sky. The game's car paint and chrome are 0.6, its default 0.5, the bus's paint 1. `ReflectionStrength` (0.8)
+  and `Shine` (smoothness times this) tune it. The game gives some stone 0.7: as a mirror, a stone well looked like
+  glazed chrome, hence the higher start for non-metals.
 - **Bounced light** (global illumination, Ctrl+F4): two rays per pixel within 60 m look for what is within 8 m of a
   surface; what they find (its colour on screen, or its material lit by sun and sky) lights the surface, nearer things
   more. A crate's face in shade beside sunlit grass and walls picks up their warm light; open ground gets none (the
   sky's light is the game's own ambient). The frame has no albedo, so a pixel's colour over the light that reached it
-  (the game's ambient for its facing, plus the sun where the shadow rays reach it) stands in. `BouncedLightStrength` (1)
-  tunes it; mode 7 shows the bounced light alone.
+  (the game's ambient for its facing, plus the sun where the shadow rays reach it) stands in. `BouncedLightStrength`
+  (1.5) tunes it; mode 7 shows the bounced light alone.
 
 Only what the player's camera draws is in the ray traced scene: meshes on layers it leaves out (the house's ramp has an
 invisible collider mesh over its planks) would cast shadows the player cannot see the cause of.
 
-**Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it); the mode and the shadow
-strength are also in `BepInEx/config/tldmods.raytrace.cfg`.
+**Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it): 0 the game's own shadows,
+1 ray traced, 2 ray traced and all the game's own, 3 the shadow mask, 4 to 7 the occlusion, the reflections, what the
+primary ray found and the bounced light alone. Everything is also in `BepInEx/config/tldmods.raytrace.cfg`.
 
 Ray traced shadows of cut-out leaves and glass would be solid (the rays see triangles, not textures): those are left out.
 
@@ -57,10 +60,19 @@ and throws every frame without drawing anything; this mod turns it off there. (S
 outlines of the player's own head and rectangles around trees and rocks.) The game looks somewhat different on Direct3D
 12 even without this mod: less haze, darker grass.
 
+In mode 1 the meshes the rays see have their shadow casting turned off (`ShadowCastingMode.Off`) while they are in the
+ray traced scene; they get it back when they leave it, in the other modes and at night. Unity draws the sun's
+screen-space shadow mask only when something casts into its shadow map, so a millimetre cube that casts shadows only
+stays 1.5 m in front of the camera. The sun's command buffer is on the sun only while the player's camera renders (from
+its culling, else it does not run that frame), and off while another camera (a mirror) renders.
+
 ## Cost
 
-With everything on (shadows, occlusion, reflections, bounced light) the GPU's share at the house was 1.6 ms (structures
-0.36, rays 1.12, composite 0.06). The numbers below are from shadows alone.
+With everything on (shadows into the game's mask, occlusion, reflections, bounced light) the GPU's share at the house,
+1280x720, was about 1.1 ms (structures 0.36, rays 0.67 and composite 0.05, each the average of the frame's two passes).
+The rays' cost grows with the pixels: at 3840x2160 the rays of the version before took 7.9 ms. The game no longer draws
+the traced meshes into its own shadow map in mode 1, which saves some of that. The numbers below are from the first
+version, shadows alone.
 
 Measured standing still in the test copy (1280x720, graphics jobs off, uncapped; `RayTrace.Bench` through the debug
 bridge): about 4 ms a frame (31.6 to 28.0 fps in one pair of 10 s windows, 34.5 to 38.3 ms in the next). Of that, the GPU
@@ -72,6 +84,8 @@ The first version cost 11.7 ms of CPU a frame: it asked Unity for every mesh's b
 
 - From eye level, a shadow on the ground 150 m away is a thin line: the far shadows show best from hills or behind tall
   objects. Hills beyond 600 m and the distant terrain are not in the ray traced scene.
+- When the sun has no shadows of its own (the game's shadows off in its settings), modes 1 and 2 darken the frame by
+  `Strength` beyond the game's shadow distance instead, as the first version did.
 - The native plugin is written into `TheLongDrive_Data/Plugins/x86_64` by the mod; Unity loads it when the game starts,
   so a new version takes effect at the next start.
 

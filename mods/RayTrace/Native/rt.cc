@@ -58,7 +58,9 @@ struct RtFrame
     int32_t frame;
     int32_t stage;                  // testing: 2 the event, 3 + the structures, 4 + the rays, 5 + the composite (all); 50 all but the composite, 51 all but the copy back
     int32_t submit;                 // 0: our own command list, run by Unity (ExecuteCommandList); 1: into Unity's own (CommandRecordingState)
-    int32_t effects;                // wanted: 1 sun shadows, 2 ambient occlusion
+    int32_t effects;                // wanted: 1 sun shadows, 2 ambient occlusion, 4 reflections, 8 bounced light; 16 this is
+                                    // the sun's shadow-mask pass (colour in/out: Unity's screen-space shadow mask), 32 the
+                                    // mask pass already traced this frame's shadows
     int32_t aoRays;
     float aoRadius, aoStrength, aoDistance;
     float viewProj[16];             // row-major: world to clip (the reflections look their hits up on screen)
@@ -66,6 +68,7 @@ struct RtFrame
     float reflStrength;
     int32_t giRays;                 // global illumination (effects 8): rays per pixel, their length, its strength, how far
     float giRadius, giStrength, giDistance;
+    float sunRadius;                // the sun disk's radius (tangent of its angle): softer shadows further from their caster
 };
 #pragma pack(pop)
 
@@ -77,14 +80,14 @@ static IUnityGraphicsD3D12v7* g_d3d12;
 static ID3D12Device5* g_device;
 static char g_status[512] = "not loaded by Unity";
 static char g_error[512] = "";
-static int g_events, g_dispatches, g_blasBuilt, g_instances, g_blasLive, g_skipped, g_skipBusy, g_skipSize;
+static int g_maskPasses, g_events, g_dispatches, g_blasBuilt, g_instances, g_blasLive, g_skipped, g_skipBusy, g_skipSize;
 static std::vector<char> g_rtLib, g_composite;
 
 static void Status(const char* fmt, ...) { va_list a; va_start(a, fmt); vsnprintf(g_status, sizeof g_status, fmt, a); va_end(a); }
 static void Error(const char* fmt, ...) { va_list a; va_start(a, fmt); vsnprintf(g_error, sizeof g_error, fmt, a); va_end(a); }
 #define CHECK(x, what) do { HRESULT _hr = (x); if (FAILED(_hr)) { Error("%s failed: 0x%08lx", what, (unsigned long)_hr); return false; } } while (0)
 
-static const int kFrames = 3;
+static const int kFrames = 6;   // two events a frame (the sun's shadow mask, then the frame): three frames in flight
 struct FrameSlot
 {
     // Our own list (submit 0): Unity runs it from a worker thread, later, so each slot has its own, recorded again
@@ -131,7 +134,7 @@ static bool g_ready, g_failed;
 static ID3D12QueryHeap* g_queries;
 static ID3D12Resource* g_queryReadback;
 static double g_tickMs;
-static bool g_slotTimed[3];
+static bool g_slotTimed[kFrames];
 static double g_gpuBuild, g_gpuRays, g_gpuComposite;
 static int g_gpuSamples;
 
@@ -495,7 +498,7 @@ static bool BuildTopLevel(const RtFrame& f, FrameSlot& s, uint32_t& count)
         D3D12_RAYTRACING_INSTANCE_DESC d = {};
         memcpy(d.Transform, g.transform, sizeof d.Transform);
         // mask 1: what casts shadows and closes in (the shadow and occlusion rays see only these); 2: see-through
-        d.InstanceMask = (g.flags & 1) ? 0x02 : 0x01; d.InstanceID = count;
+        d.InstanceMask = (g.flags & 1) ? 0x02 : (g.flags & 2) ? 0x04 : 0x01; d.InstanceID = count;   // 2 glass/water, 4 casts shadows only
         d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE | D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
         d.AccelerationStructure = it->second.buffer->GetGPUVirtualAddress();
         InstanceInfo ii = { it->second.triOffset, g.flags, g.smoothness, g.metallic, { g.albedo[0], g.albedo[1], g.albedo[2] }, 0 };
@@ -529,6 +532,7 @@ struct Constants   // b0 (shaders/common.hlsli)
     int32_t mode, frame, effects, aoRays;
     float aoRadius, aoStrength, aoDistance, reflStrength;
     float giRadius, giStrength, giDistance; int32_t giRays;
+    float sunRadius, pad5[3];
 };
 static_assert(sizeof(Constants) <= 1024, "constants");
 
@@ -542,6 +546,7 @@ static bool Frame(const RtFrame& f)
         g_ready = true;
     }
     if (!f.depth || !f.colorIn || !f.colorOut || f.width <= 0 || f.height <= 0) { Error("missing textures"); return false; }
+    if (f.effects & 16) g_maskPasses++;
     FrameSlot& s = g_slots[g_slot];
     ID3D12Fence* fence = g_d3d12->GetFrameFence();
     if (s.fence && fence && fence->GetCompletedValue() < s.fence) { g_skipBusy++; return true; }   // the GPU is still on this slot's frame: skip
@@ -598,14 +603,14 @@ static bool Frame(const RtFrame& f)
         memcpy(c.cameraPos, f.cameraPos, 16); memcpy(c.sunDir, f.sunDir, 16);
         memcpy(c.sunColor, f.sunColor, 16); memcpy(c.skyTop, f.skyTop, 16); memcpy(c.skyHorizon, f.skyHorizon, 16); memcpy(c.skyGround, f.skyGround, 16);
         c.reflStrength = f.reflStrength;
-        c.giRadius = f.giRadius; c.giStrength = f.giStrength; c.giDistance = f.giDistance; c.giRays = f.giRays;
+        c.giRadius = f.giRadius; c.giStrength = f.giStrength; c.giDistance = f.giDistance; c.giRays = f.giRays; c.sunRadius = f.sunRadius;
         c.size[0] = (float)f.width; c.size[1] = (float)f.height; c.size[2] = 1.0f / f.width; c.size[3] = 1.0f / f.height;
         c.fadeStart = f.fadeStart; c.fadeEnd = f.fadeEnd; c.strength = f.strength; c.maxDistance = f.maxDistance; c.mode = f.mode; c.frame = f.frame;
         c.aoRays = f.aoRays; c.aoRadius = f.aoRadius; c.aoStrength = f.aoStrength; c.aoDistance = f.aoDistance;
         // what this frame traces: shadows while the sun is up and a shadow mode is on, ambient occlusion when wanted
         bool shadows = (f.effects & 1) && f.sunDir[3] > 0 && f.mode >= 1 && f.mode <= 3;
         bool ao = (f.effects & 2) != 0, refl = (f.effects & 4) != 0, gi = (f.effects & 8) != 0;
-        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) | (refl ? 4 : 0) | (gi ? 8 : 0) : 0;
+        c.effects = (instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) | (refl ? 4 : 0) | (gi ? 8 : 0) : 0) | (f.effects & 48);
         memcpy(s.constantsMap, &c, sizeof c);
         g_list->SetComputeRootSignature(g_rootSig);
         g_list->SetComputeRootShaderResourceView(0, g_tlas->GetGPUVirtualAddress());
@@ -614,7 +619,7 @@ static bool Frame(const RtFrame& f)
         if (!s.infos) { Error("no instance info"); ok = false; }
         else g_list->SetComputeRootShaderResourceView(3, s.infos->GetGPUVirtualAddress());
         g_list->SetComputeRootShaderResourceView(4, g_triNormals->GetGPUVirtualAddress());
-        if (c.effects)
+        if (c.effects & 15)
         {
             g_list->SetPipelineState1(g_rtpso);
             D3D12_DISPATCH_RAYS_DESC d = {};
@@ -698,8 +703,8 @@ __declspec(dllexport) void __stdcall RT_SetShaders(const void* rtLib, int rtLeng
 
 __declspec(dllexport) int __stdcall RT_Status(char* buffer, int size)
 {
-    snprintf(buffer, size, "%s; events %d, frames traced %d, structures %d (built %d), instances %d, skipped %d (busy frames %d, buffers too small %d); GPU ms: structures %.2f, rays %.2f, composite %.2f%s%s",
-             g_status, g_events, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_skipBusy, g_skipSize, g_gpuBuild, g_gpuRays, g_gpuComposite, g_error[0] ? "; error: " : "", g_error);
+    snprintf(buffer, size, "%s; events %d (sun mask passes %d), frames traced %d, structures %d (built %d), instances %d, skipped %d (busy frames %d, buffers too small %d); GPU ms: structures %.2f, rays %.2f, composite %.2f%s%s",
+             g_status, g_events, g_maskPasses, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_skipBusy, g_skipSize, g_gpuBuild, g_gpuRays, g_gpuComposite, g_error[0] ? "; error: " : "", g_error);
     return g_ready ? 2 : g_device ? 1 : 0;
 }
 }
