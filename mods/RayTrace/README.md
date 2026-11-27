@@ -23,6 +23,15 @@ Besides the shadows:
   mirror (smoothness over 0.7: glass, water, and the game's glossy paint, which it sets to 1 on the buses), a mirror ray
   finds what it reflects. Its colour comes from the frame where that point is on screen, else from the material's tint
   lit by sun and sky, else the sky. `ReflectionStrength` (0.6) and `Shine` (smoothness times this) tune it.
+- **Bounced light** (global illumination, Ctrl+F4): two rays per pixel within 60 m look for what is within 8 m of a
+  surface; what they find (its colour on screen, or its material lit by sun and sky) lights the surface, nearer things
+  more. A crate's face in shade beside sunlit grass and walls picks up their warm light; open ground gets none (the
+  sky's light is the game's own ambient). The frame has no albedo, so a pixel's colour over the light that reached it
+  (the game's ambient for its facing, plus the sun where the shadow rays reach it) stands in. `BouncedLightStrength` (1)
+  tunes it; mode 7 shows the bounced light alone.
+
+Only what the player's camera draws is in the ray traced scene: meshes on layers it leaves out (the house's ramp has an
+invisible collider mesh over its planks) would cast shadows the player cannot see the cause of.
 
 **Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it); the mode and the shadow
 strength are also in `BepInEx/config/tldmods.raytrace.cfg`.
@@ -49,6 +58,9 @@ outlines of the player's own head and rectangles around trees and rocks.) The ga
 12 even without this mod: less haze, darker grass.
 
 ## Cost
+
+With everything on (shadows, occlusion, reflections, bounced light) the GPU's share at the house was 1.6 ms (structures
+0.36, rays 1.12, composite 0.06). The numbers below are from shadows alone.
 
 Measured standing still in the test copy (1280x720, graphics jobs off, uncapped; `RayTrace.Bench` through the debug
 bridge): about 4 ms a frame (31.6 to 28.0 fps in one pair of 10 s windows, 34.5 to 38.3 ms in the next). Of that, the GPU

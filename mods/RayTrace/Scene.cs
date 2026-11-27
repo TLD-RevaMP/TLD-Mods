@@ -23,6 +23,9 @@ namespace RayTrace
         public static bool IncludeGround = true;
         internal static Scene Current;
         public static bool SkipCutout = true;
+        /// The layers the player's camera draws: meshes on other layers only cast the game's shadows (the house's ramp has
+        /// an Unlit/Color collider mesh over its planks: the bounced-light rays lit the ramp with its own colour)
+        public static int CullingMask = ~0;
         /// Frames a mesh's GPU buffers and vertex count must stay the same before the rays see it.
         public static int StableFrames = 30;
         /// A settled mesh's buffers are looked up again every this many frames (staggered across the meshes): looking up
@@ -165,6 +168,25 @@ namespace RayTrace
         }
         private Vector3 _lastCamera;
 
+        /// Testing (bridge): every traced mesh within `within` m of the camera: name, shadow mode, its LOD group's level
+        /// (or -), whether it shows, and its height range.
+        public static string Near(float within)
+        {
+            var cam = Current?._lastCamera ?? Vector3.zero;
+            var sb = new System.Text.StringBuilder();
+            foreach (var e in Current?._entries ?? new List<Entry>())
+            {
+                if (e.Renderer == null) continue;
+                var b = e.Renderer.bounds;
+                if ((b.ClosestPoint(cam) - cam).magnitude > within) continue;
+                var g = e.Renderer.GetComponentInParent<LODGroup>();
+                string lod = "-";
+                if (g != null) { var lods = g.GetLODs(); for (int i = 0; i < lods.Length; i++) if (Array.IndexOf(lods[i].renderers, e.Renderer) >= 0) lod = i + "/" + lods.Length; }
+                sb.Append($"{e.Renderer.transform.root.name}/{e.Renderer.name} {e.Renderer.shadowCastingMode} lod {lod} shown {e.Shown} vis {e.Renderer.isVisible} y {b.min.y - cam.y:F2}..{b.max.y - cam.y:F2} | ");
+            }
+            return sb.ToString();
+        }
+
         /// Testing (bridge): the materials of renderers within `within` m: shader, render queue, and the smoothness and
         /// metallic values it carries, by count.
         public static string Materials(float within) => MaterialsOf(within, null);
@@ -218,7 +240,7 @@ namespace RayTrace
             for (; _pendingAt < end; _pendingAt++)
             {
                 var rd = _pending[_pendingAt];
-                if (rd == null || !rd.enabled || rd.isPartOfStaticBatch) continue;
+                if (rd == null || !rd.enabled || rd.isPartOfStaticBatch || (CullingMask & (1 << rd.gameObject.layer)) == 0) continue;
                 var b = rd.bounds;
                 bool ground = b.size.x >= GroundSize || b.size.z >= GroundSize;
                 if (rd.shadowCastingMode == ShadowCastingMode.Off && !ground) continue;

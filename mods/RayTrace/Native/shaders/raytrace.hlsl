@@ -54,12 +54,10 @@ float3 Sky(float3 d)
     return Capped(s, 0.8);
 }
 
-// What a reflection ray sees: the frame itself where its hit is on screen (and not hidden there), else the hit's
-// material colour lit by the sun (with a shadow ray) and the sky, else the sky
-float3 Reflected(float3 origin, float3 dir, float pixelDist)
+// The light leaving a ray's hit toward the ray: the frame itself where the hit is on screen (and not hidden there), else
+// the hit's material colour lit by the sun (with a shadow ray) and the sky
+float3 HitColor(float3 origin, float3 dir, Payload h)
 {
-    Payload h = Closest(origin, dir, 1000, MaskSolid);
-    if (h.t < 0) return Sky(dir);
     float3 hp = origin + dir * h.t;
     float4 clip = mul(viewProj, float4(hp, 1));
     if (clip.w > 0)
@@ -80,6 +78,13 @@ float3 Reflected(float3 origin, float3 dir, float pixelDist)
     // the material's tint without its texture (a textured surface averages well under its tint), lit by sun and sky
     // (the hidden ground under a car is shaded and textured: kept dark, it was a bright grey before 2026-11-27)
     return Capped(m.albedo * 0.15 * (lerp(skyGround.rgb, skyTop.rgb, n.y * 0.5 + 0.5) * 0.6 + sunColor.rgb * sun), 0.25);
+}
+
+// What a reflection ray sees: its hit's colour, else the sky
+float3 Reflected(float3 origin, float3 dir, float pixelDist)
+{
+    Payload h = Closest(origin, dir, 1000, MaskSolid);
+    return h.t < 0 ? Sky(dir) : HitColor(origin, dir, h);
 }
 
 float3 Unpack(uint v)
@@ -130,11 +135,39 @@ void Gen()
         Ao[px] = open;
     }
 
+    // the primary ray (reflections, bounced light): the surface under this pixel, or glass and water in front of it
+    Payload s; s.t = -1; s.inst = 0; s.n = 0;
+    if (effects & (EffectRefl | EffectGi)) s = Closest(cameraPos.xyz, -view, dist + max(0.3, dist * 0.02), MaskSolid | MaskSeeThrough);
+
+    if (effects & EffectGi)
+    {
+        float3 bounce = 0;
+        if (dist < giDistance)
+        {
+            // the flat surface's normal from depth, like the ambient occlusion's: the mesh's smoothed normal tilts on bevelled
+            // edges, and rays under the real surface found the surface itself (a plank lit by its own colour)
+            float3 n = NormalAt(px, p);
+            float3 t = normalize(abs(n.y) < 0.99 ? cross(n, float3(0, 1, 0)) : cross(n, float3(1, 0, 0)));
+            float3 b = cross(n, t);
+            float3 o = p + n * (0.02 + dist * 0.002) + view * bias * 0.5;
+            float rot = Hash(px, 11) * 6.2831853;
+            int rays = max(1, giRays);
+            for (int k = 0; k < rays; k++)
+            {
+                float u1 = (k + Hash(px, k + 5)) / rays, a = rot + k * 2.3999632, rr = sqrt(u1);
+                float3 dir = normalize(t * (rr * cos(a)) + b * (rr * sin(a)) + n * sqrt(max(0, 1 - u1)));
+                // only what is near bounces light in (the sky's light is the game's own ambient already)
+                Payload h = Closest(o, dir, giRadius, MaskSolid);
+                if (h.t >= 0) bounce += HitColor(o, dir, h) * (1 - h.t / giRadius);
+            }
+            bounce /= rays;
+        }
+        Gi[px] = float4(bounce, 1);
+    }
+
     if (effects & EffectRefl)
     {
         float4 result = 0;
-        // the primary ray: the surface under this pixel, or glass and water in front of it
-        Payload s = Closest(cameraPos.xyz, -view, dist + max(0.3, dist * 0.02), MaskSolid | MaskSeeThrough);
         if (mode == 6) { InstanceInfo d = Instances[s.inst]; Refl[px] = s.t >= 0 ? float4(d.smoothness, d.flags & 1, 1, 1) : 0; return; }
         if (s.t >= 0)
         {

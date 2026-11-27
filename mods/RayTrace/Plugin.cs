@@ -22,7 +22,9 @@ namespace RayTrace
         internal static ConfigEntry<KeyboardShortcut> CycleKey;
         internal static ConfigEntry<bool> AoCfg;
         internal static ConfigEntry<KeyboardShortcut> AoKey;
-        internal static readonly string[] ModeNames = { "shadows off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)", "ambient occlusion alone (testing)", "reflections alone (testing)" };
+        internal static readonly string[] ModeNames = { "shadows off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)", "ambient occlusion alone (testing)", "reflections alone (testing)", "what the primary ray found (testing)", "bounced light alone (testing)" };
+        internal static ConfigEntry<bool> GiCfg;
+        internal static ConfigEntry<KeyboardShortcut> GiKey;
         internal static ConfigEntry<bool> ReflCfg;
         internal static ConfigEntry<float> ShineCfg;
         internal static ConfigEntry<KeyboardShortcut> ReflKey;
@@ -30,7 +32,7 @@ namespace RayTrace
         private void Awake()
         {
             Instance = this; _log = Logger;
-            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("Sun shadows: 0 off, 1 beyond the game's own shadow distance, 2 everywhere, 3 the shadow mask, 4 the ambient occlusion alone, 5 the reflections alone", new AcceptableValueRange<int>(0, 5)));
+            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("Sun shadows: 0 off, 1 beyond the game's own shadow distance, 2 everywhere, 3 the shadow mask, 4 the ambient occlusion alone, 5 the reflections alone, 6 what the primary ray found, 7 the bounced light alone", new AcceptableValueRange<int>(0, 7)));
             StrengthCfg = Config.Bind("RayTrace", "Strength", 0.55f, new ConfigDescription("How much of a pixel's light the sun is: a shadowed pixel keeps 1 - this", new AcceptableValueRange<float>(0f, 1f)));
             CycleKey = Config.Bind("Keys", "CycleMode", new KeyboardShortcut(KeyCode.F7, KeyCode.LeftControl), "Switches between the shadow modes in game");
             AoCfg = Config.Bind("RayTrace", "AmbientOcclusion", true, "Ray traced ambient occlusion: corners, the ground under cars and where things touch darken");
@@ -40,6 +42,10 @@ namespace RayTrace
             ShineCfg = Config.Bind("RayTrace", "Shine", 1f, new ConfigDescription("Each material's smoothness times this. Reflections start at smoothness 0.7: at 1 glass, water and polished surfaces (a little on glossy paint); 1.3 makes paint shine more", new AcceptableValueRange<float>(0f, 10f)));
             var reflStrength = Config.Bind("RayTrace", "ReflectionStrength", 0.6f, new ConfigDescription("How much of the ray traced reflection is mixed in (1: all the material asks for)", new AcceptableValueRange<float>(0f, 1f)));
             Tracer.ReflStrength = reflStrength.Value; reflStrength.SettingChanged += (_, __) => Tracer.ReflStrength = reflStrength.Value;
+            GiCfg = Config.Bind("RayTrace", "BouncedLight", true, "Ray traced global illumination: light bounced off nearby surfaces tints and brightens what is next to them");
+            var giStrength = Config.Bind("RayTrace", "BouncedLightStrength", 1f, new ConfigDescription("How much bounced light is added", new AcceptableValueRange<float>(0f, 3f)));
+            GiKey = Config.Bind("Keys", "ToggleBouncedLight", new KeyboardShortcut(KeyCode.F4, KeyCode.LeftControl), "Turns the ray traced bounced light on or off in game");
+            Tracer.Gi = GiCfg.Value; Tracer.GiStrength = giStrength.Value; giStrength.SettingChanged += (_, __) => Tracer.GiStrength = giStrength.Value;
             ReflKey = Config.Bind("Keys", "ToggleReflections", new KeyboardShortcut(KeyCode.F5, KeyCode.LeftControl), "Turns the ray traced reflections on or off in game");
             Tracer.Refl = ReflCfg.Value; Scene.Shine = ShineCfg.Value;
             ShineCfg.SettingChanged += (_, __) => Scene.Shine = ShineCfg.Value;
@@ -82,9 +88,14 @@ namespace RayTrace
             Bench.Frame(Time.unscaledDeltaTime);
             if (Plugin.CycleKey != null && Plugin.CycleKey.Value.IsDown())
             {
-                Tracer.Mode = (Tracer.Mode + 1) % 6;
+                Tracer.Mode = (Tracer.Mode + 1) % 8;
                 Plugin.ModeCfg.Value = Tracer.Mode;
                 _toast = "RayTrace: " + Plugin.ModeNames[Tracer.Mode]; _toastUntil = Time.unscaledTime + 2.5f;
+            }
+            if (Plugin.GiKey != null && Plugin.GiKey.Value.IsDown())
+            {
+                Tracer.Gi = !Tracer.Gi; Plugin.GiCfg.Value = Tracer.Gi;
+                _toast = "RayTrace: bounced light " + (Tracer.Gi ? "on" : "off"); _toastUntil = Time.unscaledTime + 2.5f;
             }
             if (Plugin.ReflKey != null && Plugin.ReflKey.Value.IsDown())
             {

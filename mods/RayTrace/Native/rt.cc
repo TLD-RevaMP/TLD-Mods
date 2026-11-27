@@ -64,7 +64,8 @@ struct RtFrame
     float viewProj[16];             // row-major: world to clip (the reflections look their hits up on screen)
     float skyTop[4], skyHorizon[4], skyGround[4], sunColor[4];   // linear colours: what a ray that leaves the scene sees
     float reflStrength;
-    int32_t pad4;
+    int32_t giRays;                 // global illumination (effects 8): rays per pixel, their length, its strength, how far
+    float giRadius, giStrength, giDistance;
 };
 #pragma pack(pop)
 
@@ -106,8 +107,8 @@ static ID3D12PipelineState* g_compositePso;
 static ID3D12Resource* g_shaderTable;
 static ID3D12DescriptorHeap* g_heap;
 static UINT g_descSize;
-static ID3D12Resource* g_mask; static ID3D12Resource* g_ao; static ID3D12Resource* g_refl; static int g_maskW, g_maskH;
-static const int kDesc = 8;   // per slot: t1 depth, t2 colour in, t3 (spare), u0 shadow mask, u1 colour out, u2 ambient occlusion, u3 reflections, u4 (spare)
+static ID3D12Resource* g_mask; static ID3D12Resource* g_ao; static ID3D12Resource* g_refl; static ID3D12Resource* g_gi; static int g_maskW, g_maskH;
+static const int kDesc = 8;   // per slot: t1 depth, t2 colour in, t3 (spare), u0 shadow mask, u1 colour out, u2 ambient occlusion, u3 reflections, u4 global illumination
 static const int kBuildMax = 64;                 // normals passes per frame (one per new bottom-level structure)
 static const int kSlotDesc = kDesc + 4 * kBuildMax;   // and four descriptors for each: its vertices, normals, indices, the output
 
@@ -350,10 +351,11 @@ static ID3D12Resource* Texture(int w, int h, DXGI_FORMAT format)
 /// Our own textures at the frame's size: the shadow mask, the ambient occlusion, the reflections.
 static bool EnsureMask(int w, int h)
 {
-    if (g_mask && g_ao && g_refl && g_maskW == w && g_maskH == h) return true;
-    Release(g_mask); Release(g_ao); Release(g_refl);
-    g_mask = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_ao = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_refl = Texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
-    if (!g_mask || !g_ao || !g_refl) { Error("mask textures"); return false; }
+    if (g_mask && g_ao && g_refl && g_gi && g_maskW == w && g_maskH == h) return true;
+    Release(g_mask); Release(g_ao); Release(g_refl); Release(g_gi);
+    g_mask = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_ao = Texture(w, h, DXGI_FORMAT_R8_UNORM);
+    g_refl = Texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT); g_gi = Texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    if (!g_mask || !g_ao || !g_refl || !g_gi) { Error("mask textures"); return false; }
     g_maskW = w; g_maskH = h;
     return true;
 }
@@ -526,6 +528,7 @@ struct Constants   // b0 (shaders/common.hlsli)
     float fadeStart, fadeEnd, strength, maxDistance;
     int32_t mode, frame, effects, aoRays;
     float aoRadius, aoStrength, aoDistance, reflStrength;
+    float giRadius, giStrength, giDistance; int32_t giRays;
 };
 static_assert(sizeof(Constants) <= 1024, "constants");
 
@@ -579,7 +582,7 @@ static bool Frame(const RtFrame& f)
 
     // descriptors: t1 depth, t2 colour in, t3 (colour in again), u0 the mask, u1 colour out, u2 ambient occlusion, u3 reflections
     Srv(f.depth, Cpu(g_slot, 0)); Srv(f.colorIn, Cpu(g_slot, 1)); Srv(f.colorIn, Cpu(g_slot, 2));
-    Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4)); Uav(g_ao, Cpu(g_slot, 5)); Uav(g_refl, Cpu(g_slot, 6)); Uav(g_ao, Cpu(g_slot, 7));
+    Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4)); Uav(g_ao, Cpu(g_slot, 5)); Uav(g_refl, Cpu(g_slot, 6)); Uav(g_gi, Cpu(g_slot, 7));
     ID3D12DescriptorHeap* heaps[1] = { g_heap };
     g_list->SetDescriptorHeaps(1, heaps);
     g_buildsThisFrame = 0;
@@ -595,13 +598,14 @@ static bool Frame(const RtFrame& f)
         memcpy(c.cameraPos, f.cameraPos, 16); memcpy(c.sunDir, f.sunDir, 16);
         memcpy(c.sunColor, f.sunColor, 16); memcpy(c.skyTop, f.skyTop, 16); memcpy(c.skyHorizon, f.skyHorizon, 16); memcpy(c.skyGround, f.skyGround, 16);
         c.reflStrength = f.reflStrength;
+        c.giRadius = f.giRadius; c.giStrength = f.giStrength; c.giDistance = f.giDistance; c.giRays = f.giRays;
         c.size[0] = (float)f.width; c.size[1] = (float)f.height; c.size[2] = 1.0f / f.width; c.size[3] = 1.0f / f.height;
         c.fadeStart = f.fadeStart; c.fadeEnd = f.fadeEnd; c.strength = f.strength; c.maxDistance = f.maxDistance; c.mode = f.mode; c.frame = f.frame;
         c.aoRays = f.aoRays; c.aoRadius = f.aoRadius; c.aoStrength = f.aoStrength; c.aoDistance = f.aoDistance;
         // what this frame traces: shadows while the sun is up and a shadow mode is on, ambient occlusion when wanted
         bool shadows = (f.effects & 1) && f.sunDir[3] > 0 && f.mode >= 1 && f.mode <= 3;
-        bool ao = (f.effects & 2) != 0, refl = (f.effects & 4) != 0;
-        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) | (refl ? 4 : 0) : 0;
+        bool ao = (f.effects & 2) != 0, refl = (f.effects & 4) != 0, gi = (f.effects & 8) != 0;
+        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) | (refl ? 4 : 0) | (gi ? 8 : 0) : 0;
         memcpy(s.constantsMap, &c, sizeof c);
         g_list->SetComputeRootSignature(g_rootSig);
         g_list->SetComputeRootShaderResourceView(0, g_tlas->GetGPUVirtualAddress());

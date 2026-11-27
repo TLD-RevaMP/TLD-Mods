@@ -21,6 +21,11 @@ namespace RayTrace
         /// Ray traced reflections (on surfaces whose smoothness times Scene.Shine is over 0.2, and on glass and water)
         public static bool Refl = true;
         public static float ReflStrength = 0.6f;
+        /// Ray traced bounced light: GiRays rays (GiRadius m) per pixel within GiDistance m; what nearby surfaces bounce onto
+        /// a surface tints and brightens it (the sky's light is the game's own ambient already)
+        public static bool Gi = true;
+        public static int GiRays = 2;
+        public static float GiRadius = 8f, GiStrength = 1f, GiDistance = 60f;
         public static int AoRays = 4;
         public static float AoRadius = 1.5f, AoStrength = 0.85f, AoDistance = 80f;
         public static float Strength = 0.55f, MaxDistance = 2000f;
@@ -95,7 +100,7 @@ namespace RayTrace
         private unsafe void Record(Camera cam)
         {
             _cb.Clear();
-            if (Mode == 0 && !Ao && !Refl) return;
+            if (Mode == 0 && !Ao && !Refl && !Gi) return;
             int w = cam.pixelWidth, h = cam.pixelHeight;
             var colorFormat = cam.allowHDR ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
             // random-write textures all three: vkd3d-proton keeps them in one layout, so the native side needs no
@@ -106,6 +111,7 @@ namespace RayTrace
 
             var f = (Native.Frame*)_frames[_slot];
             var camPos = cam.transform.position;
+            Scene.CullingMask = cam.cullingMask;
             f->GeometryCount = Geometries = _scene.Write(camPos, out var geometries, ref _geometries, _slot, _frameIndex);
             f->Geometries = geometries;
             f->Width = w; f->Height = h; f->Mode = Mode;
@@ -128,7 +134,8 @@ namespace RayTrace
             f->Strength = Strength; f->MaxDistance = MaxDistance;
             Put(f->SunColor, sun != null ? sun.color.linear * sun.intensity : Color.black);
             f->NewStructuresPerFrame = NewStructuresPerFrame; f->FrameIndex = ++_frameIndex; f->Stage = Stage; f->Submit = Submit;
-            f->Effects = 1 | (Ao ? 2 : 0) | (Refl ? 4 : 0); f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
+            f->Effects = 1 | (Ao ? 2 : 0) | (Refl ? 4 : 0) | (Gi ? 8 : 0);
+            f->GiRays = GiRays; f->GiRadius = GiRadius; f->GiStrength = GiStrength; f->GiDistance = GiDistance; f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
 
             _cb.Blit(BuiltinRenderTextureType.Depth, _depth);
             _cb.Blit(BuiltinRenderTextureType.CameraTarget, _in);

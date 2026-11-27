@@ -20,6 +20,20 @@ float AoBlurred(int2 px, float depth)
     return weight > 0 ? sum / weight : 1;
 }
 
+float3 GiBlurred(int2 px, float depth)
+{
+    float3 sum = 0; float weight = 0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++)
+        {
+            int2 q = clamp(px + int2(x, y) * 2, int2(0, 0), int2(size.xy) - 1);
+            float d = Depth.Load(int3(q, 0));
+            float w = exp(-abs(d - depth) / (depth * 0.02 + 1e-7)) * (1.0 / (1 + x * x + y * y));
+            sum += Gi[q].rgb * w; weight += w;
+        }
+    return weight > 0 ? sum / weight : 0;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -39,6 +53,19 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     float aoFade = 1 - saturate((dist - aoDistance * 0.75) / max(aoDistance * 0.25, 1e-3));
     col.rgb *= lerp(1, ao, aoStrength * aoFade);
+    if (effects & EffectGi)
+    {
+        // the bounced light on this surface times its albedo. The frame has no albedo: it shows the albedo times the
+        // light that arrives, the game's ambient (for this facing) plus the sun where the shadow rays reach it
+        float3 gi = GiBlurred(id.xy, depth);
+        float giFade = 1 - saturate((dist - giDistance * 0.75) / max(giDistance * 0.25, 1e-3));
+        if (mode == 7) { ColorOut[id.xy] = float4(gi * 2, 1); return; }
+        float3 n = NormalAt(id.xy, WorldPos(id.xy, depth));
+        float3 light = lerp(skyGround.rgb, skyTop.rgb, saturate(n.y * 0.5 + 0.5));
+        if (sunDir.w > 0) light += sunColor.rgb * saturate(dot(n, sunDir.xyz)) * (1 - shadow);
+        float3 albedo = min(col.rgb / max(light, 0.02), 0.8);
+        col.rgb += albedo * gi * giStrength * giFade;
+    }
     if (effects & EffectRefl)
     {
         float4 r = Refl[id.xy];

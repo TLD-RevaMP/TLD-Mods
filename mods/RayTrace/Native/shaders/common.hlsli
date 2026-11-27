@@ -10,14 +10,16 @@ cbuffer Constants : register(b0)
     float fadeStart, fadeEnd, strength, maxDistance;
     int mode, frame, effects, aoRays; // effects (this frame): 1 shadows, 2 ambient occlusion, 4 reflections
     float aoRadius, aoStrength, aoDistance, reflStrength;
+    float giRadius, giStrength, giDistance; int giRays;
 };
 Texture2D<float> Depth : register(t1);
 Texture2D<float4> ColorIn : register(t2);
 RWTexture2D<float> Mask : register(u0);     // 1: in shadow
 RWTexture2D<float> Ao : register(u2);       // 1: open, 0: closed in
 RWTexture2D<float4> Refl : register(u3);    // the reflected colour, and how much of it (a)
+RWTexture2D<float4> Gi : register(u4);      // light bounced onto the surface by what is near it
 
-static const int EffectShadows = 1, EffectAo = 2, EffectRefl = 4;
+static const int EffectShadows = 1, EffectAo = 2, EffectRefl = 4, EffectGi = 8;
 
 // Unity's reversed depth on D3D: 1 at the near plane, 0 at the far one (the sky)
 float3 WorldPos(uint2 px, float depth)

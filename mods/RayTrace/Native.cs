@@ -48,7 +48,8 @@ namespace RayTrace
             public fixed float ViewProj[16];      // row-major, world to clip
             public fixed float SkyTop[4], SkyHorizon[4], SkyGround[4], SunColor[4];   // linear
             public float ReflStrength;
-            public int Pad4;
+            public int GiRays;
+            public float GiRadius, GiStrength, GiDistance;
         }
 
         /// Writes RayTraceNative.dll into TheLongDrive_Data/Plugins/x86_64 (only when it changed): Unity gives a plugin its
