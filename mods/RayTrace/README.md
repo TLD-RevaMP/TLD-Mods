@@ -34,7 +34,9 @@ DLSS is not part of it: the test machine's GPU is AMD.
 ## What it changes besides
 
 On Direct3D 12 the game's ambient occlusion (post-processing's Multi-Scale Volumetric Obscurance) has no compute shaders
-and throws every frame; this mod switches it to Scalable Ambient Obscurance there.
+and throws every frame without drawing anything; this mod turns it off there. (Switching it to the other mode drew dark
+outlines of the player's own head and rectangles around trees and rocks.) The game looks somewhat different on Direct3D
+12 even without this mod: less haze, darker grass.
 
 ## Cost
 
