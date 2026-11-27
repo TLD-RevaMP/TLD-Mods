@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- RayTrace: hardware ray traced effects for The Long Drive on Direct3D 12 (README.md). Just for fun. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>RayTrace</AssemblyName>
+    <RootNamespace>RayTrace</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <PathMap>$(MSBuildProjectDirectory)=/src/$(MSBuildProjectName)</PathMap>
+    <!-- BETA branch only. The game to build against: -p:GameDir=..., else the TLD_DIR environment variable, else Steam's
+         default library (Windows or Linux). -->
+    <GameDir Condition="'$(GameDir)' == ''">$(TLD_DIR)</GameDir>
+    <GameDir Condition="'$(GameDir)' == '' And '$(OS)' == 'Windows_NT'">C:/Program Files (x86)/Steam/steamapps/common/The Long Drive</GameDir>
+    <GameDir Condition="'$(GameDir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/The Long Drive</GameDir>
+    <Managed>$(GameDir)/TheLongDrive_Data/Managed</Managed>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- the game's assemblies and BepInEx, from the game folder (never shipped) -->
+    <Reference Include="$(Managed)/Assembly-CSharp.dll;$(Managed)/UnityEngine.dll;$(Managed)/UnityEngine.*Module.dll;$(Managed)/Unity.Postprocessing.Runtime.dll" Private="false" />
+    <Reference Include="$(GameDir)/BepInEx/core/BepInEx.dll;$(GameDir)/BepInEx/core/0Harmony.dll" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Native/build.sh's output: the native plugin and the compiled shaders -->
+    <EmbeddedResource Include="Native/out/*" LogicalName="native.%(Filename)%(Extension)" WithCulture="false" />
+  </ItemGroup>
+</Project>
