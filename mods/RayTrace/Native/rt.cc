@@ -33,7 +33,10 @@ struct RtGeometry
     uint32_t indexStart;            // in indices
     uint32_t indexCount;
     uint32_t index32;               // 1: 32-bit indices, 0: 16-bit
-    uint32_t pad;
+    uint32_t flags;                 // 1: see-through (glass, water): reflections only, the shadow and occlusion rays pass it
+    ID3D12Resource* normalBuffer;   // the vertex normals (or null: face normals)
+    uint32_t normalOffset, normalStride, normalFormat, pad2;   // format: 1 float x3, 2 half x4, 3 snorm8 x4
+    float smoothness, metallic, albedo[3], pad3;
 };
 
 struct RtFrame
@@ -58,6 +61,10 @@ struct RtFrame
     int32_t effects;                // wanted: 1 sun shadows, 2 ambient occlusion
     int32_t aoRays;
     float aoRadius, aoStrength, aoDistance;
+    float viewProj[16];             // row-major: world to clip (the reflections look their hits up on screen)
+    float skyTop[4], skyHorizon[4], skyGround[4], sunColor[4];   // linear colours: what a ray that leaves the scene sees
+    float reflStrength;
+    int32_t pad4;
 };
 #pragma pack(pop)
 
@@ -69,7 +76,7 @@ static IUnityGraphicsD3D12v7* g_d3d12;
 static ID3D12Device5* g_device;
 static char g_status[512] = "not loaded by Unity";
 static char g_error[512] = "";
-static int g_events, g_dispatches, g_blasBuilt, g_instances, g_blasLive, g_skipped;
+static int g_events, g_dispatches, g_blasBuilt, g_instances, g_blasLive, g_skipped, g_skipBusy, g_skipSize;
 static std::vector<char> g_rtLib, g_composite;
 
 static void Status(const char* fmt, ...) { va_list a; va_start(a, fmt); vsnprintf(g_status, sizeof g_status, fmt, a); va_end(a); }
@@ -86,6 +93,8 @@ struct FrameSlot
     UnityGraphicsD3D12ResourceState states[3] = {};
     uint64_t fence = 0;
     ID3D12Resource* instances = nullptr; uint32_t instanceCap = 0; void* instanceMap = nullptr;
+    ID3D12Resource* infos = nullptr; void* infoMap = nullptr;          // per instance: its material and normals (InstanceInfo)
+    ID3D12Resource* constants = nullptr; void* constantsMap = nullptr; // b0
     std::vector<ID3D12Resource*> release;   // freed once this slot's fence has passed
 };
 static FrameSlot g_slots[kFrames];
@@ -97,8 +106,21 @@ static ID3D12PipelineState* g_compositePso;
 static ID3D12Resource* g_shaderTable;
 static ID3D12DescriptorHeap* g_heap;
 static UINT g_descSize;
-static ID3D12Resource* g_mask; static ID3D12Resource* g_ao; static int g_maskW, g_maskH;
-static const int kDesc = 8;   // per slot: t1 depth, t2 colour in, t3 (spare), u0 shadow mask, u1 colour out, u2 ambient occlusion, u3-u4 (spare)
+static ID3D12Resource* g_mask; static ID3D12Resource* g_ao; static ID3D12Resource* g_refl; static int g_maskW, g_maskH;
+static const int kDesc = 8;   // per slot: t1 depth, t2 colour in, t3 (spare), u0 shadow mask, u1 colour out, u2 ambient occlusion, u3 reflections, u4 (spare)
+static const int kBuildMax = 64;                 // normals passes per frame (one per new bottom-level structure)
+static const int kSlotDesc = kDesc + 4 * kBuildMax;   // and four descriptors for each: its vertices, normals, indices, the output
+
+// Every mesh's triangle normals, three per triangle (the vertex normals, or the face's), packed: what a ray's hit needs
+// for its surface (reflections). A bump allocator; when it is full everything is built again from the start.
+static ID3D12Resource* g_triNormals;
+static const uint32_t kTriCap = 4u << 20;        // triangles (48 MB)
+static uint32_t g_triUsed;
+static bool g_triReset;
+static ID3D12RootSignature* g_normalsSig;
+static ID3D12PipelineState* g_normalsPso;
+static std::vector<char> g_normalsCs;
+static int g_buildsThisFrame;
 static ID3D12Resource* g_tlas; static ID3D12Resource* g_tlasScratch; static uint64_t g_tlasSize, g_tlasScratchSize;
 static ID3D12Resource* g_blasScratch; static uint64_t g_blasScratchSize;
 static bool g_ready, g_failed;
@@ -112,7 +134,9 @@ static bool g_slotTimed[3];
 static double g_gpuBuild, g_gpuRays, g_gpuComposite;
 static int g_gpuSamples;
 
-struct Blas { ID3D12Resource* buffer; ID3D12Resource* vb; uint32_t vertexCount; int lastFrame; };
+struct Blas { ID3D12Resource* buffer; ID3D12Resource* vb; uint32_t vertexCount; int lastFrame; uint32_t triOffset; };
+static const uint32_t kNoNormals = 0xFFFFFFFFu;
+struct InstanceInfo { uint32_t triOffset, flags; float smoothness, metallic, albedo[3], pad; };   // shaders/common.hlsli
 static std::unordered_map<uint64_t, Blas> g_blas;
 
 // ---------------------------------------------------------------- helpers
@@ -147,8 +171,24 @@ static DXGI_FORMAT SrvFormat(DXGI_FORMAT f)
     }
 }
 
-static D3D12_CPU_DESCRIPTOR_HANDLE Cpu(int slot, int i) { auto h = g_heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += (SIZE_T)(slot * kDesc + i) * g_descSize; return h; }
-static D3D12_GPU_DESCRIPTOR_HANDLE Gpu(int slot) { auto h = g_heap->GetGPUDescriptorHandleForHeapStart(); h.ptr += (UINT64)(slot * kDesc) * g_descSize; return h; }
+static D3D12_CPU_DESCRIPTOR_HANDLE Cpu(int slot, int i) { auto h = g_heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += (SIZE_T)(slot * kSlotDesc + i) * g_descSize; return h; }
+static D3D12_GPU_DESCRIPTOR_HANDLE Gpu(int slot, int i = 0) { auto h = g_heap->GetGPUDescriptorHandleForHeapStart(); h.ptr += (UINT64)(slot * kSlotDesc + i) * g_descSize; return h; }
+
+static void RawSrv(ID3D12Resource* r, D3D12_CPU_DESCRIPTOR_HANDLE at)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC v = {};
+    v.Format = DXGI_FORMAT_R32_TYPELESS; v.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    v.Buffer.NumElements = (UINT)(r->GetDesc().Width / 4); v.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    g_device->CreateShaderResourceView(r, &v, at);
+}
+
+static void RawUav(ID3D12Resource* r, D3D12_CPU_DESCRIPTOR_HANDLE at)
+{
+    D3D12_UNORDERED_ACCESS_VIEW_DESC v = {};
+    v.Format = DXGI_FORMAT_R32_TYPELESS; v.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    v.Buffer.NumElements = (UINT)(r->GetDesc().Width / 4); v.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    g_device->CreateUnorderedAccessView(r, nullptr, &v, at);
+}
 
 static void Srv(ID3D12Resource* r, D3D12_CPU_DESCRIPTOR_HANDLE at)
 {
@@ -175,29 +215,50 @@ static void UavBarrier(ID3D12Resource* r)
 
 static bool CreatePipelines()
 {
-    // one root signature for both passes: t0 the scene (root SRV), a table (kDesc: three SRVs from t1, the rest UAVs
-    // from u0), and 44 root constants (b0)
-    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
-    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; ranges[0].NumDescriptors = 3; ranges[0].BaseShaderRegister = 1; ranges[0].OffsetInDescriptorsFromTableStart = 0;
-    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; ranges[1].NumDescriptors = kDesc - 3; ranges[1].BaseShaderRegister = 0; ranges[1].OffsetInDescriptorsFromTableStart = 3;
-    D3D12_ROOT_PARAMETER p[3] = {};
-    p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[0].Descriptor.ShaderRegister = 0;
-    p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; p[1].DescriptorTable.NumDescriptorRanges = 2; p[1].DescriptorTable.pDescriptorRanges = ranges;
-    p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; p[2].Constants.ShaderRegister = 0; p[2].Constants.Num32BitValues = 44;
-    D3D12_ROOT_SIGNATURE_DESC rs = {}; rs.NumParameters = 3; rs.pParameters = p;
+    // one root signature for the rays and the composite: t0 the scene (root SRV), a table (kDesc: three SRVs from t1, the
+    // rest UAVs from u0), the constants (b0, a root CBV), t4 the instances' materials, t5 the triangle normals
     typedef HRESULT (WINAPI* Serialize)(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
     auto serialize = (Serialize)GetProcAddress(GetModuleHandleA("d3d12.dll"), "D3D12SerializeRootSignature");
     if (!serialize) { Error("no D3D12SerializeRootSignature"); return false; }
-    ID3DBlob* blob = nullptr; ID3DBlob* err = nullptr;
-    if (FAILED(serialize(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) { Error("root signature: %s", err ? (const char*)err->GetBufferPointer() : "?"); return false; }
-    CHECK(g_device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), __uuidof(ID3D12RootSignature), (void**)&g_rootSig), "CreateRootSignature");
-    blob->Release();
+    auto make = [&](const D3D12_ROOT_SIGNATURE_DESC& rs, ID3D12RootSignature** out) -> bool
+    {
+        ID3DBlob* blob = nullptr; ID3DBlob* err = nullptr;
+        if (FAILED(serialize(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) { Error("root signature: %s", err ? (const char*)err->GetBufferPointer() : "?"); return false; }
+        CHECK(g_device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), __uuidof(ID3D12RootSignature), (void**)out), "CreateRootSignature");
+        blob->Release();
+        return true;
+    };
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; ranges[0].NumDescriptors = 3; ranges[0].BaseShaderRegister = 1; ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; ranges[1].NumDescriptors = kDesc - 3; ranges[1].BaseShaderRegister = 0; ranges[1].OffsetInDescriptorsFromTableStart = 3;
+    D3D12_ROOT_PARAMETER p[5] = {};
+    p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[0].Descriptor.ShaderRegister = 0;
+    p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; p[1].DescriptorTable.NumDescriptorRanges = 2; p[1].DescriptorTable.pDescriptorRanges = ranges;
+    p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; p[2].Descriptor.ShaderRegister = 0;
+    p[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[3].Descriptor.ShaderRegister = 4;
+    p[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[4].Descriptor.ShaderRegister = 5;
+    D3D12_ROOT_SIGNATURE_DESC rs = {}; rs.NumParameters = 5; rs.pParameters = p;
+    if (!make(rs, &g_rootSig)) return false;
+
+    // the normals pass: a table of its mesh's vertices (t0), normals (t1) and indices (t2) and the output (u0), 12 constants
+    D3D12_DESCRIPTOR_RANGE nr[2] = {};
+    nr[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; nr[0].NumDescriptors = 3; nr[0].BaseShaderRegister = 0; nr[0].OffsetInDescriptorsFromTableStart = 0;
+    nr[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; nr[1].NumDescriptors = 1; nr[1].BaseShaderRegister = 0; nr[1].OffsetInDescriptorsFromTableStart = 3;
+    D3D12_ROOT_PARAMETER np[2] = {};
+    np[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; np[0].DescriptorTable.NumDescriptorRanges = 2; np[0].DescriptorTable.pDescriptorRanges = nr;
+    np[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; np[1].Constants.ShaderRegister = 0; np[1].Constants.Num32BitValues = 12;
+    D3D12_ROOT_SIGNATURE_DESC nrs = {}; nrs.NumParameters = 2; nrs.pParameters = np;
+    if (!make(nrs, &g_normalsSig)) return false;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC ncp = {}; ncp.pRootSignature = g_normalsSig; ncp.CS.pShaderBytecode = g_normalsCs.data(); ncp.CS.BytecodeLength = g_normalsCs.size();
+    CHECK(g_device->CreateComputePipelineState(&ncp, __uuidof(ID3D12PipelineState), (void**)&g_normalsPso), "normals pipeline");
+    g_triNormals = Buffer((uint64_t)kTriCap * 12, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    if (!g_triNormals) { Error("triangle normals buffer"); return false; }
 
     // the ray tracing pipeline: Gen (ray generation), Miss, and a hit group around an empty closest hit (the rays skip it)
     D3D12_EXPORT_DESC exports[3] = { { L"Gen", nullptr, D3D12_EXPORT_FLAG_NONE }, { L"Miss", nullptr, D3D12_EXPORT_FLAG_NONE }, { L"Hit", nullptr, D3D12_EXPORT_FLAG_NONE } };
     D3D12_DXIL_LIBRARY_DESC lib = {}; lib.DXILLibrary.pShaderBytecode = g_rtLib.data(); lib.DXILLibrary.BytecodeLength = g_rtLib.size(); lib.NumExports = 3; lib.pExports = exports;
     D3D12_HIT_GROUP_DESC hg = {}; hg.HitGroupExport = L"HitGroup"; hg.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES; hg.ClosestHitShaderImport = L"Hit";
-    D3D12_RAYTRACING_SHADER_CONFIG sc = {}; sc.MaxPayloadSizeInBytes = 4; sc.MaxAttributeSizeInBytes = 8;
+    D3D12_RAYTRACING_SHADER_CONFIG sc = {}; sc.MaxPayloadSizeInBytes = 20; sc.MaxAttributeSizeInBytes = 8;
     D3D12_RAYTRACING_PIPELINE_CONFIG pc = {}; pc.MaxTraceRecursionDepth = 1;
     D3D12_GLOBAL_ROOT_SIGNATURE grs = { g_rootSig };
     D3D12_STATE_SUBOBJECT sub[5] = {
@@ -224,7 +285,7 @@ static bool CreatePipelines()
     D3D12_COMPUTE_PIPELINE_STATE_DESC cp = {}; cp.pRootSignature = g_rootSig; cp.CS.pShaderBytecode = g_composite.data(); cp.CS.BytecodeLength = g_composite.size();
     CHECK(g_device->CreateComputePipelineState(&cp, __uuidof(ID3D12PipelineState), (void**)&g_compositePso), "CreateComputePipelineState");
 
-    D3D12_DESCRIPTOR_HEAP_DESC hd = {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = kDesc * kFrames; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    D3D12_DESCRIPTOR_HEAP_DESC hd = {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = kSlotDesc * kFrames; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     CHECK(g_device->CreateDescriptorHeap(&hd, __uuidof(ID3D12DescriptorHeap), (void**)&g_heap), "CreateDescriptorHeap");
     D3D12_QUERY_HEAP_DESC qd = {}; qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qd.Count = 4 * kFrames;
     UINT64 freq = 0;
@@ -241,6 +302,8 @@ static bool CreatePipelines()
         CHECK(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&s.allocator), "CreateCommandAllocator");
         CHECK(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr, __uuidof(ID3D12GraphicsCommandList4), (void**)&s.list), "CreateCommandList");
         s.list->Close();
+        s.constants = Buffer(1024, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+        if (!s.constants || FAILED(s.constants->Map(0, nullptr, &s.constantsMap))) { Error("constant buffer"); return false; }
     }
     return true;
 }
@@ -284,13 +347,13 @@ static ID3D12Resource* Texture(int w, int h, DXGI_FORMAT format)
     return r;
 }
 
-/// Our own textures at the frame's size: the shadow mask and the ambient occlusion.
+/// Our own textures at the frame's size: the shadow mask, the ambient occlusion, the reflections.
 static bool EnsureMask(int w, int h)
 {
-    if (g_mask && g_ao && g_maskW == w && g_maskH == h) return true;
-    Release(g_mask); Release(g_ao);
-    g_mask = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_ao = Texture(w, h, DXGI_FORMAT_R8_UNORM);
-    if (!g_mask || !g_ao) { Error("mask textures"); return false; }
+    if (g_mask && g_ao && g_refl && g_maskW == w && g_maskH == h) return true;
+    Release(g_mask); Release(g_ao); Release(g_refl);
+    g_mask = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_ao = Texture(w, h, DXGI_FORMAT_R8_UNORM); g_refl = Texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    if (!g_mask || !g_ao || !g_refl) { Error("mask textures"); return false; }
     g_maskW = w; g_maskH = h;
     return true;
 }
@@ -319,11 +382,40 @@ static D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc(const RtGeometry& g)
     return d;
 }
 
+// A mesh's triangle normals into g_triNormals from `offset` on (shaders/normals.hlsl): its vertex normals when it has
+// them and the buffer holds them, else each triangle's face normal.
+static void NormalsPass(const RtGeometry& g, uint32_t offset)
+{
+    uint32_t tris = g.indexCount / 3;
+    ID3D12Resource* nb = g.normalBuffer;
+    uint32_t nfmt = nb ? g.normalFormat : 0;
+    if (nb && nfmt)
+    {
+        uint64_t need = (uint64_t)g.normalOffset + (uint64_t)g.normalStride * (g.vertexCount ? g.vertexCount - 1 : 0) + (nfmt == 1 ? 12 : nfmt == 2 ? 8 : 4);
+        if (nb->GetDesc().Width < need) nfmt = 0;
+    }
+    int base = kDesc + 4 * g_buildsThisFrame++;
+    RawSrv(g.vertexBuffer, Cpu(g_slot, base)); RawSrv(nfmt ? nb : g.vertexBuffer, Cpu(g_slot, base + 1)); RawSrv(g.indexBuffer, Cpu(g_slot, base + 2));
+    RawUav(g_triNormals, Cpu(g_slot, base + 3));
+    uint32_t k[12] = { g.vertexOffset, g.vertexStride, g.vertexFormat, g.normalOffset, g.normalStride, nfmt,
+                       g.indexStart * (g.index32 ? 4u : 2u), g.index32, tris, offset, 0, 0 };
+    g_list->SetComputeRootSignature(g_normalsSig);
+    g_list->SetPipelineState(g_normalsPso);
+    g_list->SetComputeRootDescriptorTable(0, Gpu(g_slot, base));
+    g_list->SetComputeRoot32BitConstants(1, 12, k, 0);
+    g_list->Dispatch((tris + 63) / 64, 1, 1);
+}
+
 // The bottom-level structures this frame still needs, at most `budget` new ones (they share one scratch buffer, so
 // they are built one after another with a barrier between).
 static bool BuildBottomLevel(const RtFrame& f)
 {
     int built = 0;
+    if (g_triReset)   // the normals buffer was full: everything again from the start
+    {
+        for (auto& kv : g_blas) Release(kv.second.buffer);
+        g_blas.clear(); g_triUsed = 0; g_triReset = false;
+    }
     for (int i = 0; i < f.geometryCount; i++)
     {
         const RtGeometry& g = f.geometries[i];
@@ -337,7 +429,7 @@ static bool BuildBottomLevel(const RtFrame& f)
         {
             uint64_t vbNeed = (uint64_t)g.vertexOffset + (uint64_t)g.vertexStride * (g.vertexCount ? g.vertexCount - 1 : 0) + (g.vertexFormat == 10 ? 8 : 12);
             uint64_t ibNeed = ((uint64_t)g.indexStart + g.indexCount) * (g.index32 ? 4 : 2);
-            if (g.vertexBuffer->GetDesc().Width < vbNeed || g.indexBuffer->GetDesc().Width < ibNeed) { g_skipped++; continue; }
+            if (g.vertexBuffer->GetDesc().Width < vbNeed || g.indexBuffer->GetDesc().Width < ibNeed) { g_skipSize++; continue; }
         }
         D3D12_RAYTRACING_GEOMETRY_DESC gd = GeometryDesc(g);
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in = {};
@@ -354,7 +446,13 @@ static bool BuildBottomLevel(const RtFrame& f)
         b.Inputs = in; b.DestAccelerationStructureData = result->GetGPUVirtualAddress(); b.ScratchAccelerationStructureData = g_blasScratch->GetGPUVirtualAddress();
         g_list->BuildRaytracingAccelerationStructure(&b, 0, nullptr);
         if (it != g_blas.end()) Release(it->second.buffer);
-        g_blas[g.key] = Blas{ result, g.vertexBuffer, g.vertexCount, f.frame };
+        uint32_t tris = g.indexCount / 3, triOffset = kNoNormals;
+        if (g_buildsThisFrame < kBuildMax && g_triNormals)
+        {
+            if (g_triUsed + tris <= kTriCap) { triOffset = g_triUsed; g_triUsed += tris; NormalsPass(g, triOffset); }
+            else g_triReset = true;
+        }
+        g_blas[g.key] = Blas{ result, g.vertexBuffer, g.vertexCount, f.frame, triOffset };
         built++; g_blasBuilt++;
     }
     if (built) UavBarrier(nullptr);
@@ -380,8 +478,13 @@ static bool BuildTopLevel(const RtFrame& f, FrameSlot& s, uint32_t& count)
         s.instances = Buffer((uint64_t)s.instanceCap * sizeof(D3D12_RAYTRACING_INSTANCE_DESC), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
         if (!s.instances) { Error("instance buffer"); return false; }
         s.instances->Map(0, nullptr, &s.instanceMap);
+        Release(s.infos);
+        s.infos = Buffer((uint64_t)s.instanceCap * sizeof(InstanceInfo), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+        if (!s.infos) { Error("instance info buffer"); return false; }
+        s.infos->Map(0, nullptr, &s.infoMap);
     }
     auto* out = (D3D12_RAYTRACING_INSTANCE_DESC*)s.instanceMap;
+    auto* infos = (InstanceInfo*)s.infoMap;
     for (int i = 0; i < f.geometryCount; i++)
     {
         const RtGeometry& g = f.geometries[i];
@@ -389,8 +492,12 @@ static bool BuildTopLevel(const RtFrame& f, FrameSlot& s, uint32_t& count)
         if (it == g_blas.end() || it->second.lastFrame != f.frame) continue;
         D3D12_RAYTRACING_INSTANCE_DESC d = {};
         memcpy(d.Transform, g.transform, sizeof d.Transform);
-        d.InstanceMask = 0xFF; d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE | D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
+        // mask 1: what casts shadows and closes in (the shadow and occlusion rays see only these); 2: see-through
+        d.InstanceMask = (g.flags & 1) ? 0x02 : 0x01; d.InstanceID = count;
+        d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE | D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE;
         d.AccelerationStructure = it->second.buffer->GetGPUVirtualAddress();
+        InstanceInfo ii = { it->second.triOffset, g.flags, g.smoothness, g.metallic, { g.albedo[0], g.albedo[1], g.albedo[2] }, 0 };
+        infos[count] = ii;
         out[count++] = d;
     }
     g_instances = (int)count;
@@ -408,32 +515,33 @@ static bool BuildTopLevel(const RtFrame& f, FrameSlot& s, uint32_t& count)
     return true;
 }
 
-struct Constants   // b0, 44 values (shaders/common.hlsli)
+struct Constants   // b0 (shaders/common.hlsli)
 {
     float invViewProj[16];
+    float viewProj[16];
     float cameraPos[4];
     float sunDir[4];
     float size[4];         // width, height, 1/width, 1/height
+    float sunColor[4], skyTop[4], skyHorizon[4], skyGround[4];
     float fadeStart, fadeEnd, strength, maxDistance;
     int32_t mode, frame, effects, aoRays;
-    float aoRadius, aoStrength, aoDistance, pad0;
-    float pad1[4];
+    float aoRadius, aoStrength, aoDistance, reflStrength;
 };
-static_assert(sizeof(Constants) == 44 * 4, "root constants");
+static_assert(sizeof(Constants) <= 1024, "constants");
 
 static bool Frame(const RtFrame& f)
 {
     if (!g_ready)
     {
         if (g_failed || !g_device) return false;
-        if (g_rtLib.empty() || g_composite.empty()) { Error("no shaders"); return false; }
+        if (g_rtLib.empty() || g_composite.empty() || g_normalsCs.empty()) { Error("no shaders"); return false; }
         if (!CreatePipelines()) { g_failed = true; return false; }
         g_ready = true;
     }
     if (!f.depth || !f.colorIn || !f.colorOut || f.width <= 0 || f.height <= 0) { Error("missing textures"); return false; }
     FrameSlot& s = g_slots[g_slot];
     ID3D12Fence* fence = g_d3d12->GetFrameFence();
-    if (s.fence && fence && fence->GetCompletedValue() < s.fence) { g_skipped++; return true; }   // the GPU is still on this slot's frame: skip
+    if (s.fence && fence && fence->GetCompletedValue() < s.fence) { g_skipBusy++; return true; }   // the GPU is still on this slot's frame: skip
     ID3D12GraphicsCommandList4* unityList = nullptr;
     if (f.submit == 1)
     {
@@ -469,9 +577,12 @@ static bool Frame(const RtFrame& f)
     }
     if (!EnsureMask(f.width, f.height)) { if (!unityList) g_list->Close(); return false; }
 
-    // descriptors: t1 depth, t2 colour in, t3 (colour in again), u0 the mask, u1 colour out
+    // descriptors: t1 depth, t2 colour in, t3 (colour in again), u0 the mask, u1 colour out, u2 ambient occlusion, u3 reflections
     Srv(f.depth, Cpu(g_slot, 0)); Srv(f.colorIn, Cpu(g_slot, 1)); Srv(f.colorIn, Cpu(g_slot, 2));
-    Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4)); Uav(g_ao, Cpu(g_slot, 5)); Uav(g_ao, Cpu(g_slot, 6)); Uav(g_ao, Cpu(g_slot, 7));
+    Uav(g_mask, Cpu(g_slot, 3)); Uav(f.colorOut, Cpu(g_slot, 4)); Uav(g_ao, Cpu(g_slot, 5)); Uav(g_refl, Cpu(g_slot, 6)); Uav(g_ao, Cpu(g_slot, 7));
+    ID3D12DescriptorHeap* heaps[1] = { g_heap };
+    g_list->SetDescriptorHeaps(1, heaps);
+    g_buildsThisFrame = 0;
 
     if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 0);
     uint32_t instances = 0;
@@ -480,20 +591,25 @@ static bool Frame(const RtFrame& f)
     if (ok && f.stage >= 4)
     {
         Constants c = {};
-        memcpy(c.invViewProj, f.invViewProj, sizeof c.invViewProj); memcpy(c.cameraPos, f.cameraPos, 16); memcpy(c.sunDir, f.sunDir, 16);
+        memcpy(c.invViewProj, f.invViewProj, sizeof c.invViewProj); memcpy(c.viewProj, f.viewProj, sizeof c.viewProj);
+        memcpy(c.cameraPos, f.cameraPos, 16); memcpy(c.sunDir, f.sunDir, 16);
+        memcpy(c.sunColor, f.sunColor, 16); memcpy(c.skyTop, f.skyTop, 16); memcpy(c.skyHorizon, f.skyHorizon, 16); memcpy(c.skyGround, f.skyGround, 16);
+        c.reflStrength = f.reflStrength;
         c.size[0] = (float)f.width; c.size[1] = (float)f.height; c.size[2] = 1.0f / f.width; c.size[3] = 1.0f / f.height;
         c.fadeStart = f.fadeStart; c.fadeEnd = f.fadeEnd; c.strength = f.strength; c.maxDistance = f.maxDistance; c.mode = f.mode; c.frame = f.frame;
         c.aoRays = f.aoRays; c.aoRadius = f.aoRadius; c.aoStrength = f.aoStrength; c.aoDistance = f.aoDistance;
         // what this frame traces: shadows while the sun is up and a shadow mode is on, ambient occlusion when wanted
         bool shadows = (f.effects & 1) && f.sunDir[3] > 0 && f.mode >= 1 && f.mode <= 3;
-        bool ao = (f.effects & 2) != 0;
-        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) : 0;
-        ID3D12DescriptorHeap* heaps[1] = { g_heap };
-        g_list->SetDescriptorHeaps(1, heaps);
+        bool ao = (f.effects & 2) != 0, refl = (f.effects & 4) != 0;
+        c.effects = instances ? (shadows ? 1 : 0) | (ao ? 2 : 0) | (refl ? 4 : 0) : 0;
+        memcpy(s.constantsMap, &c, sizeof c);
         g_list->SetComputeRootSignature(g_rootSig);
         g_list->SetComputeRootShaderResourceView(0, g_tlas->GetGPUVirtualAddress());
         g_list->SetComputeRootDescriptorTable(1, Gpu(g_slot));
-        g_list->SetComputeRoot32BitConstants(2, 44, &c, 0);
+        g_list->SetComputeRootConstantBufferView(2, s.constants->GetGPUVirtualAddress());
+        if (!s.infos) { Error("no instance info"); ok = false; }
+        else g_list->SetComputeRootShaderResourceView(3, s.infos->GetGPUVirtualAddress());
+        g_list->SetComputeRootShaderResourceView(4, g_triNormals->GetGPUVirtualAddress());
         if (c.effects)
         {
             g_list->SetPipelineState1(g_rtpso);
@@ -506,11 +622,10 @@ static bool Frame(const RtFrame& f)
             if (f.stage != 40) { g_list->DispatchRays(&d); g_dispatches++; }
         }
 
-        UavBarrier(g_mask);
+        UavBarrier(nullptr);
         if (g_queries) g_list->EndQuery(g_queries, D3D12_QUERY_TYPE_TIMESTAMP, g_slot * 4 + 2);
         if (f.stage == 5 || f.stage == 51)
         {
-            g_list->SetComputeRoot32BitConstants(2, 44, &c, 0);
             g_list->SetPipelineState(g_compositePso);
             g_list->Dispatch((f.width + 7) / 8, (f.height + 7) / 8, 1);
         }
@@ -570,16 +685,17 @@ __declspec(dllexport) void __stdcall UnityPluginUnload()
 __declspec(dllexport) UnityRenderingEventAndData __stdcall RT_RenderEventFunc() { return OnRenderEvent; }
 
 /// The compiled shaders (DXIL): the ray tracing library and the composite compute shader. Before the first frame.
-__declspec(dllexport) void __stdcall RT_SetShaders(const void* rtLib, int rtLength, const void* composite, int compositeLength)
+__declspec(dllexport) void __stdcall RT_SetShaders(const void* rtLib, int rtLength, const void* composite, int compositeLength, const void* normals, int normalsLength)
 {
     g_rtLib.assign((const char*)rtLib, (const char*)rtLib + rtLength);
     g_composite.assign((const char*)composite, (const char*)composite + compositeLength);
+    g_normalsCs.assign((const char*)normals, (const char*)normals + normalsLength);
 }
 
 __declspec(dllexport) int __stdcall RT_Status(char* buffer, int size)
 {
-    snprintf(buffer, size, "%s; events %d, frames traced %d, structures %d (built %d), instances %d, skipped %d; GPU ms: structures %.2f, rays %.2f, composite %.2f%s%s",
-             g_status, g_events, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_gpuBuild, g_gpuRays, g_gpuComposite, g_error[0] ? "; error: " : "", g_error);
+    snprintf(buffer, size, "%s; events %d, frames traced %d, structures %d (built %d), instances %d, skipped %d (busy frames %d, buffers too small %d); GPU ms: structures %.2f, rays %.2f, composite %.2f%s%s",
+             g_status, g_events, g_dispatches, g_blasLive, g_blasBuilt, g_instances, g_skipped, g_skipBusy, g_skipSize, g_gpuBuild, g_gpuRays, g_gpuComposite, g_error[0] ? "; error: " : "", g_error);
     return g_ready ? 2 : g_device ? 1 : 0;
 }
 }

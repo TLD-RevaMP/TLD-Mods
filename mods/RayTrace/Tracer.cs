@@ -18,6 +18,9 @@ namespace RayTrace
         /// Ray traced ambient occlusion: AoRays short rays (AoRadius m) per pixel within AoDistance m; AoStrength 1 darkens a
         /// closed-in pixel fully
         public static bool Ao = true;
+        /// Ray traced reflections (on surfaces whose smoothness times Scene.Shine is over 0.2, and on glass and water)
+        public static bool Refl = true;
+        public static float ReflStrength = 0.6f;
         public static int AoRays = 4;
         public static float AoRadius = 1.5f, AoStrength = 0.85f, AoDistance = 80f;
         public static float Strength = 0.55f, MaxDistance = 2000f;
@@ -92,7 +95,7 @@ namespace RayTrace
         private unsafe void Record(Camera cam)
         {
             _cb.Clear();
-            if (Mode == 0 && !Ao) return;
+            if (Mode == 0 && !Ao && !Refl) return;
             int w = cam.pixelWidth, h = cam.pixelHeight;
             var colorFormat = cam.allowHDR ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
             // random-write textures all three: vkd3d-proton keeps them in one layout, so the native side needs no
@@ -109,6 +112,12 @@ namespace RayTrace
             f->Depth = _depth.GetNativeTexturePtr(); f->ColorIn = _in.GetNativeTexturePtr(); f->ColorOut = _out.GetNativeTexturePtr();
             var inv = (GL.GetGPUProjectionMatrix(cam.projectionMatrix, true) * cam.worldToCameraMatrix).inverse;
             for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) f->InvViewProj[r * 4 + c] = inv[r, c];
+            var vp = GL.GetGPUProjectionMatrix(cam.projectionMatrix, true) * cam.worldToCameraMatrix;
+            for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) f->ViewProj[r * 4 + c] = vp[r, c];
+            // what a reflection that leaves the scene sees: the ambient's sky and ground, the fog's colour at the horizon
+            Put(f->SkyTop, RenderSettings.ambientSkyColor.linear); Put(f->SkyHorizon, RenderSettings.fogColor.linear);
+            Put(f->SkyGround, RenderSettings.ambientGroundColor.linear);
+            f->ReflStrength = ReflStrength;
             f->CameraPos[0] = camPos.x; f->CameraPos[1] = camPos.y; f->CameraPos[2] = camPos.z; f->CameraPos[3] = 1;
             var sun = Sun();
             var toSun = sun != null ? -sun.transform.forward : Vector3.up;
@@ -117,8 +126,9 @@ namespace RayTrace
             float shadowDistance = QualitySettings.shadowDistance;
             f->FadeStart = shadowDistance * 0.75f; f->FadeEnd = shadowDistance;
             f->Strength = Strength; f->MaxDistance = MaxDistance;
+            Put(f->SunColor, sun != null ? sun.color.linear * sun.intensity : Color.black);
             f->NewStructuresPerFrame = NewStructuresPerFrame; f->FrameIndex = ++_frameIndex; f->Stage = Stage; f->Submit = Submit;
-            f->Effects = 1 | (Ao ? 2 : 0); f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
+            f->Effects = 1 | (Ao ? 2 : 0) | (Refl ? 4 : 0); f->AoRays = AoRays; f->AoRadius = AoRadius; f->AoStrength = AoStrength; f->AoDistance = AoDistance;
 
             _cb.Blit(BuiltinRenderTextureType.Depth, _depth);
             _cb.Blit(BuiltinRenderTextureType.CameraTarget, _in);
@@ -127,6 +137,8 @@ namespace RayTrace
             _slot = (_slot + 1) % Ring;
             Info = $"on {cam.name} {w}x{h}, {Geometries} geometries from {_scene.Gathered} of {_scene.Renderers} renderers ({_scene.Skipped} skipped, gathered in {_scene.RefreshMs:F1} ms), sun {(up ? "up" : "down")}";
         }
+
+        private static unsafe void Put(float* to, Color c) { to[0] = c.r; to[1] = c.g; to[2] = c.b; to[3] = c.a; }
 
         private static Light _sun;
         private static float _sunLooked;

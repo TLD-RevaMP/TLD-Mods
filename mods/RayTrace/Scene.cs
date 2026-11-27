@@ -32,6 +32,16 @@ namespace RayTrace
         /// Renderers sorted per frame while the list is gathered again (one pass at once took 12 ms every refresh).
         public static int RefreshSlice = 1500;
 
+        internal sealed class Sub
+        {
+            public uint start, count, baseVertex; public int sub;
+            public float smoothness, metallic; public Color albedo; public bool seeThrough;
+        }
+
+        /// Shine: a material's smoothness times this. Reflections are added from smoothness 0.7 (Unity already reflects in
+        /// glossy materials itself): at 1 only glass, water and polished materials get them; more makes paint a mirror too.
+        public static float Shine = 1f;
+
         private sealed class Entry
         {
             public Renderer Renderer;
@@ -46,7 +56,10 @@ namespace RayTrace
             public bool Shown;              // enabled and active, as last read
             public Matrix4x4 Matrix;        // its transform, as last read
             public uint VertexOffset, VertexStride, VertexCount, VertexFormat, Index32;
-            public readonly List<(uint start, uint count, uint baseVertex, int sub)> Submeshes = new List<(uint, uint, uint, int)>();
+            public int NormalStream = -1;
+            public IntPtr NormalBuffer;
+            public uint NormalOffset, NormalStride, NormalFormat;
+            public readonly List<Sub> Submeshes = new List<Sub>();
         }
 
         private List<Entry> _entries = new List<Entry>(), _next = new List<Entry>();
@@ -104,6 +117,7 @@ namespace RayTrace
                         again.Ground = e.Ground; again.Filter = e.Filter; again.StableSince = frame; _entries[k] = e = again;
                     }
                     IntPtr vb = e.Mesh.GetNativeVertexBufferPtr(e.Stream), ib = e.Mesh.GetNativeIndexBufferPtr();
+                    e.NormalBuffer = e.NormalStream < 0 ? IntPtr.Zero : e.NormalStream == e.Stream ? vb : e.Mesh.GetNativeVertexBufferPtr(e.NormalStream);
                     if (vb != e.VertexBuffer || ib != e.IndexBuffer || e.StableSince == int.MaxValue) { e.VertexBuffer = vb; e.IndexBuffer = ib; e.StableSince = frame; }
                 }
                 if (e.VertexBuffer == IntPtr.Zero || e.IndexBuffer == IntPtr.Zero) continue;
@@ -121,7 +135,11 @@ namespace RayTrace
                     d.Key = e.KeyBase | (uint)s.sub;
                     d.VertexOffset = e.VertexOffset + s.baseVertex * e.VertexStride;
                     d.VertexStride = e.VertexStride; d.VertexCount = e.VertexCount - s.baseVertex; d.VertexFormat = e.VertexFormat;
-                    d.IndexStart = s.start; d.IndexCount = s.count; d.Index32 = e.Index32; d.Pad = 0;
+                    d.IndexStart = s.start; d.IndexCount = s.count; d.Index32 = e.Index32; d.Flags = s.seeThrough ? 1u : 0u;
+                    d.NormalBuffer = e.NormalBuffer; d.NormalOffset = e.NormalOffset + s.baseVertex * e.NormalStride; d.NormalStride = e.NormalStride;
+                    d.NormalFormat = e.NormalBuffer == IntPtr.Zero ? 0 : e.NormalFormat; d.Pad2 = 0;
+                    d.Smoothness = Mathf.Clamp01(s.smoothness * Shine); d.Metallic = s.metallic;
+                    d.AlbedoR = s.albedo.r; d.AlbedoG = s.albedo.g; d.AlbedoB = s.albedo.b; d.Pad3 = 0;
                 }
             }
             return n;
@@ -149,18 +167,25 @@ namespace RayTrace
 
         /// Testing (bridge): the materials of renderers within `within` m: shader, render queue, and the smoothness and
         /// metallic values it carries, by count.
-        public static string Materials(float within)
+        public static string Materials(float within) => MaterialsOf(within, null);
+        /// Testing (bridge): the same for renderers under a root object whose name has `root` in it.
+        public static string MaterialsUnder(string root) => MaterialsOf(float.MaxValue, root);
+
+        private static string MaterialsOf(float within, string root)
         {
             var cam = Current?._lastCamera ?? Vector3.zero;
             var seen = new SortedDictionary<string, int>();
             foreach (var rd in UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None))
             {
+                if (root != null && rd.transform.root.name.IndexOf(root, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 if ((rd.bounds.center - cam).magnitude > within) continue;
                 foreach (var m in rd.sharedMaterials)
                 {
                     if (m == null) continue;
                     string P(string n) => m.HasProperty(n) ? n.TrimStart('_') + " " + m.GetFloat(n).ToString("F2") : null;
-                    var props = string.Join(",", new[] { P("_Glossiness"), P("_Smoothness"), P("_Metallic"), P("_GlossMapScale"), P("_Shininess") }.Where(x => x != null));
+                    var props = string.Join(",", new[] { P("_Glossiness"), P("_Smoothness"), P("_Metallic"), P("_GlossMapScale"), P("_Shininess") }.Where(x => x != null))
+                                + (m.HasProperty("_MetallicGlossMap") && m.GetTexture("_MetallicGlossMap") != null ? ",glossmap" : "") + (m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A") ? ",albedoA" : "")
+                                + " " + rd.name;
                     string key = m.shader.name + " q" + m.renderQueue + " [" + props + "]";
                     seen.TryGetValue(key, out int n); seen[key] = n + 1;
                 }
@@ -221,6 +246,26 @@ namespace RayTrace
         }
         private int _skipping;
 
+        /// A Standard material with a metallic-gloss map (or smoothness in its albedo's alpha) takes its smoothness from that
+        /// texture times _GlossMapScale and ignores _Glossiness (the bus's paint: _Glossiness 1, a mirror, 2026-11-27). The
+        /// texture's alpha isn't readable here: about half of the scale.
+        private static bool GlossFromMap(Material m) =>
+            (m.HasProperty("_MetallicGlossMap") && m.GetTexture("_MetallicGlossMap") != null) || m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A");
+
+        private static float Smoothness(Material m, bool seeThrough)
+        {
+            if (GlossFromMap(m)) return m.HasProperty("_GlossMapScale") ? m.GetFloat("_GlossMapScale") * 0.5f : 0.3f;
+            if (m.HasProperty("_Glossiness")) return m.GetFloat("_Glossiness");
+            if (m.HasProperty("_Smoothness")) return m.GetFloat("_Smoothness");
+            return seeThrough ? 0.95f : 0f;
+        }
+
+        private static float Metallic(Material m)
+        {
+            if (m.HasProperty("_MetallicGlossMap") && m.GetTexture("_MetallicGlossMap") != null) return 0.5f;
+            return m.HasProperty("_Metallic") ? m.GetFloat("_Metallic") : 0f;
+        }
+
         private static Entry Describe(Renderer rd, Mesh mesh)
         {
             if (!mesh.HasVertexAttribute(VertexAttribute.Position)) return null;
@@ -239,6 +284,17 @@ namespace RayTrace
                 VertexOffset = (uint)mesh.GetVertexAttributeOffset(VertexAttribute.Position), VertexStride = (uint)mesh.GetVertexBufferStride(stream),
                 VertexCount = (uint)mesh.vertexCount, VertexFormat = dxgi, Index32 = mesh.indexFormat == IndexFormat.UInt32 ? 1u : 0u,
             };
+            if (mesh.HasVertexAttribute(VertexAttribute.Normal))
+            {
+                var nf = mesh.GetVertexAttributeFormat(VertexAttribute.Normal); int nd = mesh.GetVertexAttributeDimension(VertexAttribute.Normal);
+                uint code = nf == VertexAttributeFormat.Float32 && nd >= 3 ? 1u : nf == VertexAttributeFormat.Float16 && nd == 4 ? 2u : nf == VertexAttributeFormat.SNorm8 && nd == 4 ? 3u : 0u;
+                if (code != 0)
+                {
+                    e.NormalStream = mesh.GetVertexAttributeStream(VertexAttribute.Normal); e.NormalFormat = code;
+                    e.NormalOffset = (uint)mesh.GetVertexAttributeOffset(VertexAttribute.Normal); e.NormalStride = (uint)mesh.GetVertexBufferStride(e.NormalStream);
+                    e.NormalBuffer = e.NormalStream == stream ? vb : mesh.GetNativeVertexBufferPtr(e.NormalStream);
+                }
+            }
             var mats = rd.sharedMaterials;
             for (int i = 0; i < mesh.subMeshCount; i++)
             {
@@ -247,11 +303,19 @@ namespace RayTrace
                 var mat = i < mats.Length ? mats[i] : null;
                 if (mat == null) continue;
                 int queue = mat.renderQueue;
-                if (queue >= 3000 || (SkipCutout && queue >= 2450)) continue;   // transparent, cut-out
+                bool seeThrough = queue >= 3000;   // glass, water: reflections only (the shadow and occlusion rays pass them)
+                if (SkipCutout && queue >= 2450 && !seeThrough) continue;   // cut-out (leaves: the rays see triangles, not the texture)
                 // impostors (Amplify Impostors): flat quads that show a picture of a tree or a rock far away; as geometry
                 // they cast rectangles (2026-11-27: rectangles around trees in Volkan's screenshots)
                 if (mat.shader != null && mat.shader.name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                e.Submeshes.Add(((uint)sm.indexStart, (uint)sm.indexCount, (uint)Math.Max(0, sm.baseVertex), i));
+                float smooth = Smoothness(mat, seeThrough), metal = Metallic(mat);
+                if (seeThrough) smooth = Mathf.Max(smooth, 0.95f / Mathf.Max(Shine, 1f));   // glass and water are smooth whatever the shader says
+                e.Submeshes.Add(new Sub
+                {
+                    start = (uint)sm.indexStart, count = (uint)sm.indexCount, baseVertex = (uint)Math.Max(0, sm.baseVertex), sub = i,
+                    smoothness = smooth, metallic = metal,
+                    albedo = mat.HasProperty("_Color") ? mat.color : Color.white, seeThrough = seeThrough,
+                });
             }
             return e.Submeshes.Count > 0 ? e : null;
         }

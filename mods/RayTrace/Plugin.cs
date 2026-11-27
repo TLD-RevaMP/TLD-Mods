@@ -22,17 +22,27 @@ namespace RayTrace
         internal static ConfigEntry<KeyboardShortcut> CycleKey;
         internal static ConfigEntry<bool> AoCfg;
         internal static ConfigEntry<KeyboardShortcut> AoKey;
-        internal static readonly string[] ModeNames = { "shadows off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)", "ambient occlusion alone (testing)" };
+        internal static readonly string[] ModeNames = { "shadows off", "far shadows (beyond the game's own)", "ray traced shadows everywhere", "shadow mask (testing)", "ambient occlusion alone (testing)", "reflections alone (testing)" };
+        internal static ConfigEntry<bool> ReflCfg;
+        internal static ConfigEntry<float> ShineCfg;
+        internal static ConfigEntry<KeyboardShortcut> ReflKey;
 
         private void Awake()
         {
             Instance = this; _log = Logger;
-            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("Sun shadows: 0 off, 1 beyond the game's own shadow distance, 2 everywhere, 3 the shadow mask, 4 the ambient occlusion alone", new AcceptableValueRange<int>(0, 4)));
+            ModeCfg = Config.Bind("RayTrace", "Mode", 1, new ConfigDescription("Sun shadows: 0 off, 1 beyond the game's own shadow distance, 2 everywhere, 3 the shadow mask, 4 the ambient occlusion alone, 5 the reflections alone", new AcceptableValueRange<int>(0, 5)));
             StrengthCfg = Config.Bind("RayTrace", "Strength", 0.55f, new ConfigDescription("How much of a pixel's light the sun is: a shadowed pixel keeps 1 - this", new AcceptableValueRange<float>(0f, 1f)));
             CycleKey = Config.Bind("Keys", "CycleMode", new KeyboardShortcut(KeyCode.F7, KeyCode.LeftControl), "Switches between the shadow modes in game");
             AoCfg = Config.Bind("RayTrace", "AmbientOcclusion", true, "Ray traced ambient occlusion: corners, the ground under cars and where things touch darken");
             AoKey = Config.Bind("Keys", "ToggleAmbientOcclusion", new KeyboardShortcut(KeyCode.F6, KeyCode.LeftControl), "Turns the ray traced ambient occlusion on or off in game");
             Tracer.Ao = AoCfg.Value;
+            ReflCfg = Config.Bind("RayTrace", "Reflections", true, "Ray traced reflections on shiny surfaces, glass and water");
+            ShineCfg = Config.Bind("RayTrace", "Shine", 1f, new ConfigDescription("Each material's smoothness times this. Reflections start at smoothness 0.7: at 1 glass, water and polished surfaces (a little on glossy paint); 1.3 makes paint shine more", new AcceptableValueRange<float>(0f, 10f)));
+            var reflStrength = Config.Bind("RayTrace", "ReflectionStrength", 0.6f, new ConfigDescription("How much of the ray traced reflection is mixed in (1: all the material asks for)", new AcceptableValueRange<float>(0f, 1f)));
+            Tracer.ReflStrength = reflStrength.Value; reflStrength.SettingChanged += (_, __) => Tracer.ReflStrength = reflStrength.Value;
+            ReflKey = Config.Bind("Keys", "ToggleReflections", new KeyboardShortcut(KeyCode.F5, KeyCode.LeftControl), "Turns the ray traced reflections on or off in game");
+            Tracer.Refl = ReflCfg.Value; Scene.Shine = ShineCfg.Value;
+            ShineCfg.SettingChanged += (_, __) => Scene.Shine = ShineCfg.Value;
             Tracer.Mode = ModeCfg.Value; Tracer.Strength = StrengthCfg.Value;
             StrengthCfg.SettingChanged += (_, __) => Tracer.Strength = StrengthCfg.Value;
             try { Status = Native.Install(); }
@@ -72,9 +82,14 @@ namespace RayTrace
             Bench.Frame(Time.unscaledDeltaTime);
             if (Plugin.CycleKey != null && Plugin.CycleKey.Value.IsDown())
             {
-                Tracer.Mode = (Tracer.Mode + 1) % 5;
+                Tracer.Mode = (Tracer.Mode + 1) % 6;
                 Plugin.ModeCfg.Value = Tracer.Mode;
                 _toast = "RayTrace: " + Plugin.ModeNames[Tracer.Mode]; _toastUntil = Time.unscaledTime + 2.5f;
+            }
+            if (Plugin.ReflKey != null && Plugin.ReflKey.Value.IsDown())
+            {
+                Tracer.Refl = !Tracer.Refl; Plugin.ReflCfg.Value = Tracer.Refl;
+                _toast = "RayTrace: reflections " + (Tracer.Refl ? "on" : "off"); _toastUntil = Time.unscaledTime + 2.5f;
             }
             if (Plugin.AoKey != null && Plugin.AoKey.Value.IsDown())
             {

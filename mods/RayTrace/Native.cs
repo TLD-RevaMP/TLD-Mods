@@ -14,7 +14,7 @@ namespace RayTrace
         private const string Dll = "RayTraceNative";
 
         [DllImport(Dll)] public static extern IntPtr RT_RenderEventFunc();
-        [DllImport(Dll)] public static extern void RT_SetShaders(byte[] rtLib, int rtLength, byte[] composite, int compositeLength);
+        [DllImport(Dll)] public static extern void RT_SetShaders(byte[] rtLib, int rtLength, byte[] composite, int compositeLength, byte[] normals, int normalsLength);
         [DllImport(Dll, CharSet = CharSet.Ansi)] public static extern int RT_Status(StringBuilder buffer, int size);
 
         public const int EventFrame = 1;
@@ -26,7 +26,10 @@ namespace RayTrace
             public IntPtr VertexBuffer, IndexBuffer;
             public ulong Key;
             public uint VertexOffset, VertexStride, VertexCount, VertexFormat;
-            public uint IndexStart, IndexCount, Index32, Pad;
+            public uint IndexStart, IndexCount, Index32, Flags;   // flags: 1 see-through (glass, water)
+            public IntPtr NormalBuffer;                            // the vertex normals' buffer, or zero (face normals then)
+            public uint NormalOffset, NormalStride, NormalFormat, Pad2;   // format: 1 float x3, 2 half x4, 3 snorm8 x4
+            public float Smoothness, Metallic, AlbedoR, AlbedoG, AlbedoB, Pad3;
         }
 
         [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -42,6 +45,10 @@ namespace RayTrace
             public int NewStructuresPerFrame, FrameIndex, Stage, Submit;
             public int Effects, AoRays;          // effects: 1 sun shadows, 2 ambient occlusion
             public float AoRadius, AoStrength, AoDistance;
+            public fixed float ViewProj[16];      // row-major, world to clip
+            public fixed float SkyTop[4], SkyHorizon[4], SkyGround[4], SunColor[4];   // linear
+            public float ReflStrength;
+            public int Pad4;
         }
 
         /// Writes RayTraceNative.dll into TheLongDrive_Data/Plugins/x86_64 (only when it changed): Unity gives a plugin its
@@ -64,7 +71,8 @@ namespace RayTrace
         {
             var lib = Resource("native.raytrace.dxil");
             var composite = Resource("native.composite.dxil");
-            RT_SetShaders(lib, lib.Length, composite, composite.Length);
+            var normals = Resource("native.normals.dxil");
+            RT_SetShaders(lib, lib.Length, composite, composite.Length, normals, normals.Length);
         }
 
         public static string Status()

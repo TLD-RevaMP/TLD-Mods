@@ -14,6 +14,16 @@ Every frame, after the opaque geometry and before the post-processing:
    where the game draws none), so distant hills, buildings and cars cast shadows too. Mode 2 everywhere, mode 3 shows
    the shadow mask itself.
 
+Besides the shadows:
+
+- **Ambient occlusion** (Ctrl+F6): four short rays per pixel darken corners, the ground under cars and where things
+  touch, within 80 m. It stands in for the game's own, which has no shaders on Direct3D 12.
+- **Reflections** (Ctrl+F5): a primary ray finds each pixel's surface (glass and water in front of it too), its material
+  and its exact normal (each mesh's normals are read once from the game's own buffers); where the material is near a
+  mirror (smoothness over 0.7: glass, water, and the game's glossy paint, which it sets to 1 on the buses), a mirror ray
+  finds what it reflects. Its colour comes from the frame where that point is on screen, else from the material's tint
+  lit by sun and sky, else the sky. `ReflectionStrength` (0.6) and `Shine` (smoothness times this) tune it.
+
 **Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it); the mode and the shadow
 strength are also in `BepInEx/config/tldmods.raytrace.cfg`.
 
