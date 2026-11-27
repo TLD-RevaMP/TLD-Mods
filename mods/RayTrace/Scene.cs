@@ -385,7 +385,7 @@ namespace RayTrace
                 if (seeThrough) e.AllOpaque = false;
                 if (SkipCutout && queue >= 2450 && !seeThrough) { e.AllOpaque = false; continue; }   // cut-out (leaves: the rays see triangles, not the texture)
                 // impostors (Amplify Impostors): flat quads that show a picture of a tree or a rock far away; as geometry
-                // they cast rectangles (2026-11-27: rectangles around trees in Volkan's screenshots)
+                // they cast rectangles (2026-11-27: rectangles around trees in a player's screenshots)
                 if (mat.shader != null && mat.shader.name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0) { e.AllOpaque = false; continue; }
                 float smooth = Smoothness(mat, seeThrough), metal = Metallic(mat);
                 if (seeThrough) smooth = Mathf.Max(smooth, 0.95f / Mathf.Max(Shine, 1f));   // glass and water are smooth whatever the shader says

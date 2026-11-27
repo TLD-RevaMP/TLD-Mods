@@ -1,7 +1,11 @@
-# RayTrace (experimental, just for fun)
+# RayTrace
 
-Hardware ray traced sun shadows for The Long Drive's beta branch, on Direct3D 12 (DXR). A BepInEx 5 plugin plus a
-native D3D12 plugin of its own; no Unity editor is involved: the shaders are HLSL compiled with Microsoft's DXC.
+Mod that enables ray tracing to achieve true AAA slop in The Long Drive, made as a joke. We do not recommend using
+this mod, as it's not worth it for the performance loss.
+
+Hardware ray traced sun shadows, ambient occlusion, reflections and bounced light for The Long Drive's beta branch, on
+Direct3D 12 (DXR). A BepInEx 5 plugin plus a native D3D12 plugin of its own; no Unity editor is involved: the shaders
+are HLSL compiled with Microsoft's DXC.
 
 ## What it does
 
@@ -37,7 +41,21 @@ invisible collider mesh over its planks) would cast shadows the player cannot se
 
 **Ctrl+F7** switches between the modes in game (a label at the bottom of the screen names it): 0 the game's own shadows,
 1 ray traced, 2 ray traced and all the game's own, 3 the shadow mask, 4 to 7 the occlusion, the reflections, what the
-primary ray found and the bounced light alone. Everything is also in `BepInEx/config/tldmods.raytrace.cfg`.
+primary ray found and the bounced light alone.
+
+## Settings
+
+In RevaMP's mods list, RayTrace's **Settings** button opens its settings page (the mod's own BepInEx config,
+`BepInEx/config/tldrevamp.raytrace.cfg`). Every change applies at once:
+
+- **Effects**: the mode (the shadows, or one effect alone for testing), and ambient occlusion, reflections and bounced
+  light on or off.
+- **Keys**: Ctrl+F7 next mode, Ctrl+F6 ambient occlusion, Ctrl+F5 reflections, Ctrl+F4 bounced light.
+- **Tuning**: reflection strength, `Shine` (each material's smoothness times this), bounced light strength, the sun's
+  size for the soft shadows, and how dark the shadows are when the game's own shadows are switched off.
+
+At start the mod says on screen (for 20 s) when it can't run: the game not on Direct3D 12, a graphics card without ray
+tracing, or Unity's graphics jobs still on.
 
 Ray traced shadows of cut-out leaves and glass would be solid (the rays see triangles, not textures): those are left out.
 

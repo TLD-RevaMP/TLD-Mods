@@ -14,8 +14,9 @@ browser.
 | [CarTrailer](mods/CarTrailer) | A car trailer that RevaMP shares like the game's own trailer, with no multiplayer code |
 | [TrailerHitches](mods/TrailerHitches) | Adds receiver hitches so cars such as car06p can accept the game's trailer drawbar |
 | [RoadEnd](mods/RoadEnd) | Picked on the new-game screen: the main road ends after 5000 km at the game's roadside grave with a note |
+| [RayTrace](mods/RayTrace) | Ray traced shadows, reflections, ambient occlusion and bounced light on Direct3D 12; made as a joke, not worth the frame rate it costs |
 
-HeadUnit, TvBrowser, CarTrailer, TrailerHitches and RoadEnd are by Normal99. They were RevaMP's example mods
+HeadUnit, TvBrowser, CarTrailer, TrailerHitches, RoadEnd and RayTrace are by Normal99. They were RevaMP's example mods
 (`src/Mods` in TLD-RevaMP) and moved here with their history; they show how a mod works with RevaMP's multiplayer API
 ([docs/MODDING-MULTIPLAYER.md](https://github.com/TLD-RevaMP/TLD-RevaMP/blob/dev/docs/MODDING-MULTIPLAYER.md)).
 
